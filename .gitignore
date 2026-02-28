@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+
+# Models (large binary files)
+models/*.gguf
+models/*.bin
+models/*.safetensors
+
+# TTS voice models (large binary files — download per README)
+voices/*.onnx
+voices/*.bin
+
+# Caches
+.cache/
+*.cache
+chroma_db/
+.chroma/
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.cursor/
+
+# Environment
+.env
+.env.local
+.envrc
+*.local
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+docker-data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Audio recordings (test artifacts)
+*.wav
+*.mp3
+*.ogg
+
+# Jupyter
+.ipynb_checkpoints/
