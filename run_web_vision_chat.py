@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-Vision Chat — speak + see, the VLM describes what it sees.
-Mic -> Silero/energy VAD -> [camera capture] -> STT -> VLM (text + images) -> TTS -> Speaker
+Web Vision Chat — browser UI + terminal output simultaneously.
+Mic -> Silero/energy VAD -> [camera] -> STT -> VLM -> TTS -> Speaker
+               + WebSocket broadcast to connected browsers.
 
 Usage:
-  python3 run_vision_chat.py
+  python3 run_web_vision_chat.py                 # default 0.0.0.0:8090
+  python3 run_web_vision_chat.py --port 9000
+  python3 run_web_vision_chat.py --host 127.0.0.1
 """
 
+import argparse
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -23,9 +28,12 @@ from app.stt import STT
 from app.llm import LLM
 from app.tts import create_tts
 from app.camera import Camera
+from app.monitor import get_system_stats, get_jetson_model
 from app.pipeline import (
-    SAMPLE_RATE, MicRecorder, warmup_stt, vad_loop, stream_and_speak, load_silero,
+    SAMPLE_RATE, TTS_BREAKS, MicRecorder, warmup_stt, vad_loop,
+    tts_player, load_silero,
 )
+from app.web import Broadcaster, start_web_server
 from rich.console import Console
 from rich.panel import Panel
 
@@ -39,6 +47,8 @@ except ImportError:
 
 console = Console()
 
+
+# ── Reachy helpers (same as run_vision_chat.py) ──────────────────
 
 def _is_reachy_daemon_running() -> bool:
     if not psutil:
@@ -92,7 +102,6 @@ def _kill_stale_camera_holders(device: int = 0):
 
 
 def _connect_reachy(config):
-    """Connect to Reachy Mini using config.reachy settings. Returns ReachyMini or None."""
     if not HAS_REACHY or not config.reachy.enabled:
         return None
 
@@ -146,13 +155,73 @@ def _connect_reachy(config):
     return None
 
 
+# ── Background threads ───────────────────────────────────────────
+
+def _frame_broadcast_thread(cam: Camera, broadcaster: Broadcaster, fps: float = 10.0):
+    """Stream camera frames to browsers at UI fps via direct hardware reads.
+
+    Uses cam.read_live() (bypasses the 3fps VLM ring buffer) so the browser
+    gets a smooth video feed without affecting VLM frame selection.
+    """
+    interval = 1.0 / fps
+    while cam.health_check():
+        if broadcaster.client_count > 0:
+            b64 = cam.read_live()
+            if b64:
+                broadcaster.send({"type": "frame", "data": b64})
+        time.sleep(interval)
+
+
+def _stats_broadcast_thread(
+    broadcaster: Broadcaster,
+    models: dict,
+    reachy,
+    interval: float = 2.0,
+):
+    """Periodically send system stats + robot status to all WebSocket clients."""
+    while True:
+        try:
+            s = get_system_stats()
+            msg = {
+                "type": "stats",
+                "cpu": round(s.cpu_percent, 1),
+                "ram_used": round(s.ram_used_mb / 1024, 1),
+                "ram_total": round(s.ram_total_mb / 1024, 1),
+                "models": models,
+                "clients": broadcaster.client_count,
+            }
+            if s.gpu_percent is not None:
+                msg["gpu"] = round(s.gpu_percent, 1)
+            broadcaster.send(msg)
+
+            broadcaster.send({
+                "type": "robot",
+                "connected": reachy is not None,
+                "motors": True if reachy else False,
+                "head": "Up" if reachy else "N/A",
+            })
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+# ── Main ─────────────────────────────────────────────────────────
+
 def main():
+    parser = argparse.ArgumentParser(description="Vision Chat with Web UI")
+    parser.add_argument("--host", default=None, help="Web server bind address")
+    parser.add_argument("--port", type=int, default=None, help="Web server port")
+    args = parser.parse_args()
+
     config = Config.load()
+    web_host = args.host or config.web.host
+    web_port = args.port or config.web.port
+    broadcaster = Broadcaster()
 
     console.print(Panel.fit(
-        "[bold cyan]Vision Chat[/bold cyan]\n"
+        "[bold cyan]Web Vision Chat[/bold cyan]\n"
         "Speak anytime — camera captures when you speak\n"
-        "[dim]Ctrl-C to quit[/dim]",
+        f"[dim]Web UI: http://{{host}}:{web_port}  |  Ctrl-C to quit[/dim]",
         border_style="cyan",
     ))
 
@@ -168,7 +237,7 @@ def main():
     hw = f"hw:{card},{dev}"
     console.print(f"  Mic: {hw} ({mic_name})")
 
-    # ── Camera setup (background ring buffer) ────────────────────
+    # ── Camera setup ─────────────────────────────────────────────
     _kill_stale_camera_holders(config.vision.camera_device)
 
     cam = Camera(
@@ -280,17 +349,75 @@ def main():
         cam.close()
         return
 
+    # ── Start web server + background threads ────────────────────
+    web_thread = start_web_server(broadcaster, host=web_host, port=web_port)
+    time.sleep(0.5)
+    console.print(f"  ✓ Web UI  →  [bold]http://{web_host}:{web_port}[/bold]")
+
+    threading.Thread(
+        target=_frame_broadcast_thread,
+        args=(cam, broadcaster, config.web.ui_fps),
+        daemon=True, name="frame-broadcaster",
+    ).start()
+
+    model_info = {
+        "stt": f"faster-whisper ({config.stt.model})",
+        "vlm": llm.model,
+        "tts": f"{tts.backend_name} ({tts.voice})" if tts else "unavailable",
+        "vad": "Silero" if silero_model else "Energy",
+    }
+
+    threading.Thread(
+        target=_stats_broadcast_thread,
+        args=(broadcaster, model_info, reachy),
+        daemon=True, name="stats-broadcaster",
+    ).start()
+
+    platform_name = get_jetson_model()
+    config_info = {
+        "max_tokens": config.llm.max_tokens,
+        "temperature": config.llm.temperature,
+        "vision_frames": config.vision.frames,
+        "capture_fps": config.vision.capture_fps,
+        "ui_fps": config.web.ui_fps,
+        "jpeg_quality": config.vision.jpeg_quality,
+        "resolution": f"{config.vision.width}x{config.vision.height}",
+        "silero_threshold": config.vad.silero_threshold if config.vad.use_silero else None,
+        "beam_size": config.stt.beam_size,
+    }
+    broadcaster.send({
+        "type": "info",
+        "models": model_info,
+        "platform": platform_name,
+        "config": config_info,
+    })
+
     n_frames = config.vision.frames
     n_fewshot = len(vision_few_shot) // 2
+    first_chunk_words = config.tts.first_chunk_words
+    max_chunk_words = config.tts.max_chunk_words
+
     console.print(
         f"\n[green bold]Ready — speak anytime! "
         f"({config.vision.capture_fps} fps, {n_frames} frame{'s' if n_frames > 1 else ''} "
         f"per query{f', {n_fewshot} few-shot pairs' if n_fewshot else ''})[/green bold]\n"
     )
 
+    if broadcaster.ptt_active:
+        broadcaster.send({"type": "status", "stage": "listening"})
+    else:
+        broadcaster.send({"type": "status", "stage": "muted"})
+
     # ── Main loop ────────────────────────────────────────────────
     try:
         for segment in vad_loop(mic, console, vad_cfg=config.vad, silero=silero_model):
+            if not broadcaster.ptt_active:
+                broadcaster.send({"type": "status", "stage": "muted"})
+                mic.resume()
+                continue
+
+            broadcaster.send({"type": "status", "stage": "transcribing"})
+
             t_cam = time.perf_counter()
             captured_frames = cam.get_speech_frames(
                 speech_start=segment.start_time,
@@ -310,12 +437,14 @@ def main():
                     f"[dim]  (not recognized — {segment.duration:.1f}s, "
                     f"rms={segment.rms:.4f}{', err='+err if err else ''})[/dim]"
                 )
+                broadcaster.send({"type": "status", "stage": "listening"})
                 mic.resume()
                 continue
 
             word_count = len(text.split())
             if word_count <= 2 and "?" not in text:
                 console.print(f"[dim]  (skipped filler: \"{text}\")[/dim]")
+                broadcaster.send({"type": "status", "stage": "listening"})
                 mic.resume()
                 continue
 
@@ -324,27 +453,85 @@ def main():
                 f'  [green]You:[/green] "{text}" '
                 f'[dim]({n_imgs} frame{"s" if n_imgs != 1 else ""} captured)[/dim]'
             )
+            broadcaster.send({
+                "type": "transcript",
+                "text": text,
+                "stt_time": round(dt_stt, 2),
+                "duration": round(segment.duration, 1),
+            })
 
+            # ── VLM streaming with TTS + WebSocket broadcast ─────
+            broadcaster.send({"type": "status", "stage": "thinking"})
             console.print("  [magenta]Assistant:[/magenta] ", end="")
             sys.stdout.flush()
 
-            full_resp, dt_llm, ttft = stream_and_speak(
-                llm, tts, text, vision_system_prompt, mic.pa_sink,
+            tts_q = None
+            tts_thread = None
+            if tts:
+                tts_q = queue.Queue()
+                tts_thread = threading.Thread(
+                    target=tts_player, args=(tts, tts_q, mic.pa_sink), daemon=True,
+                )
+                tts_thread.start()
+
+            full_resp = ""
+            tts_buf = ""
+            first_tts_sent = False
+            t_llm = time.perf_counter()
+            ttft = None
+
+            for chunk_data in llm.generate_stream(
+                prompt=text, system_prompt=vision_system_prompt,
                 images_b64=captured_frames if captured_frames else None,
                 few_shot=vision_few_shot if vision_few_shot else None,
-                first_chunk_words=config.tts.first_chunk_words,
-                max_chunk_words=config.tts.max_chunk_words,
-            )
+            ):
+                content, meta = chunk_data if isinstance(chunk_data, tuple) else (chunk_data, {})
+                if content:
+                    if ttft is None:
+                        ttft = time.perf_counter() - t_llm
+                        broadcaster.send({"type": "status", "stage": "speaking"})
+                    sys.stdout.write(content)
+                    sys.stdout.flush()
+                    full_resp += content
+
+                    broadcaster.send({"type": "token", "text": content})
+
+                    if tts_q is not None:
+                        tts_buf += content
+                        words = len(tts_buf.split())
+                        limit = first_chunk_words if not first_tts_sent else max_chunk_words
+                        hit_break = any(c in content for c in TTS_BREAKS) and words >= 2
+                        if hit_break or words >= limit:
+                            tts_q.put(tts_buf.strip())
+                            tts_buf = ""
+                            first_tts_sent = True
+
+            dt_llm = time.perf_counter() - t_llm
+
+            if tts_q is not None:
+                if tts_buf.strip():
+                    tts_q.put(tts_buf.strip())
+                tts_q.put(None)
+                tts_thread.join()
+
             console.print()
 
+            toks = len(full_resp.split())
             timing = f"  [dim]STT {dt_stt:.1f}s | CAM {dt_cam*1000:.0f}ms ({n_imgs} img from buf)"
             if ttft is not None:
-                toks = len(full_resp.split())
                 timing += f" | TTFT {ttft:.1f}s | VLM {dt_llm:.1f}s ~{toks/(dt_llm or 1):.0f}w/s"
             else:
                 timing += " | VLM no response"
             timing += "[/dim]"
             console.print(timing)
+
+            broadcaster.send({
+                "type": "done",
+                "ttft": round(ttft, 2) if ttft else None,
+                "vlm_time": round(dt_llm, 2),
+                "tokens": toks,
+            })
+            broadcaster.send({"type": "status", "stage": "listening"})
 
             mic.resume()
 

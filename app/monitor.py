@@ -2,6 +2,7 @@
 
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional
 
 
@@ -60,12 +61,32 @@ def _ram() -> tuple[float, float, float]:
             return 0.0, 0.0, 0.0
 
 
-def _gpu() -> Optional[float]:
+_GPU_SYSFS_PATHS = [
+    "/sys/devices/platform/gpu.0/load",
+    "/sys/devices/platform/17000000.gpu/load",
+    "/sys/devices/gpu.0/load",
+]
+
+
+@lru_cache(maxsize=1)
+def get_jetson_model() -> str:
+    """Return a clean Jetson model name like 'Jetson Orin Nano Super'."""
     try:
-        with open("/sys/devices/gpu.0/load") as f:
-            return int(f.read().strip()) / 10.0
+        with open("/proc/device-tree/model") as f:
+            raw = f.read().strip().rstrip("\x00")
+        name = raw.replace("NVIDIA ", "").replace(" Engineering Reference Developer Kit", "")
+        return name
     except Exception:
-        pass
+        return "Jetson"
+
+
+def _gpu() -> Optional[float]:
+    for path in _GPU_SYSFS_PATHS:
+        try:
+            with open(path) as f:
+                return int(f.read().strip()) / 10.0
+        except Exception:
+            continue
     try:
         r = subprocess.run(
             ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],

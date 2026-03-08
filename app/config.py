@@ -101,6 +101,13 @@ class RAGConfig:
     chunk_overlap: int = 20
 
 
+@dataclass
+class WebConfig:
+    ui_fps: float = 10.0
+    host: str = "0.0.0.0"
+    port: int = 8090
+
+
 _SECTIONS = [
     ("llm", "llm", LLMConfig),
     ("stt", "stt", STTConfig),
@@ -110,6 +117,7 @@ _SECTIONS = [
     ("vision", "vision", VisionConfig),
     ("reachy", "reachy", ReachyConfig),
     ("rag", "rag", RAGConfig),
+    ("web", "web", WebConfig),
 ]
 
 
@@ -123,6 +131,7 @@ class Config:
     vision: VisionConfig = field(default_factory=VisionConfig)
     reachy: ReachyConfig = field(default_factory=ReachyConfig)
     rag: RAGConfig = field(default_factory=RAGConfig)
+    web: WebConfig = field(default_factory=WebConfig)
 
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Config":

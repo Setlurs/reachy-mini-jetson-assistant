@@ -58,7 +58,7 @@ if [ -f "$MODEL" ]; then
         llama-server \
         -m "/models/$MODEL_BASE" \
         --host 0.0.0.0 --port 8080 \
-        -ngl 999 -c "$CTX" -np "$NP" $EXTRA_ARGS
+        -ngl 999 -c "$CTX" -np "$NP" -fa on --cache-reuse 256 $EXTRA_ARGS
 else
     HF_CACHE="$HOME/.cache/huggingface"
     mkdir -p "$HF_CACHE"
@@ -76,7 +76,7 @@ else
         llama-server \
         -hf "$MODEL" \
         --host 0.0.0.0 --port 8080 \
-        -ngl 999 -c "$CTX" -np "$NP" $EXTRA_ARGS
+        -ngl 999 -c "$CTX" -np "$NP" -fa on --cache-reuse 256 $EXTRA_ARGS
 fi
 
 echo "✓ Container '$NAME' started."

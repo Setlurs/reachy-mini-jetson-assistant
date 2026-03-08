@@ -88,10 +88,15 @@ reachy:
   timeout: 30.0                       # Zenoh connection timeout (seconds)
   media_backend: "no_media"           # "no_media" = our app handles camera/audio
   wake_on_start: true                 # call wake_up() on fresh daemon start
-  sleep_on_exit: false                # call goto_sleep() on exit (blocks ~2s)
+  sleep_on_exit: true                 # call goto_sleep() on exit (blocks ~4s)
   antenna_rest_position: [0.0, 0.0]   # antenna target after wake-up
   daemon_retry_attempts: 3            # connection retries
   daemon_startup_wait: 15.0           # seconds to wait before retry
+
+web:
+  ui_fps: 10.0                        # camera FPS for browser UI (independent of VLM ring buffer)
+  host: "0.0.0.0"
+  port: 8090
 
 rag:
   enabled: true

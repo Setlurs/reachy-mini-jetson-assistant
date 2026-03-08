@@ -42,6 +42,7 @@ class Camera:
         self.jpeg_quality = jpeg_quality
         self.capture_fps = capture_fps
         self._cap: Optional[cv2.VideoCapture] = None
+        self._cap_lock = threading.Lock()
         self._ring: deque[tuple[float, np.ndarray]] = deque(
             maxlen=max(1, int(capture_fps * (MAX_SPEECH_SECS + PRE_SPEECH_SECS)))
         )
@@ -102,7 +103,8 @@ class Camera:
 
             if self._cap is None or not self._cap.isOpened():
                 break
-            ret, frame = self._cap.read()
+            with self._cap_lock:
+                ret, frame = self._cap.read()
             if not ret:
                 continue
             with self._lock:
@@ -124,9 +126,17 @@ class Camera:
         speech_end: float,
         max_frames: int = 3,
     ) -> list[str]:
-        """Return evenly-sampled frames from the window
-        [speech_start - PRE_SPEECH_SECS, speech_end], up to max_frames."""
-        window_start = speech_start - PRE_SPEECH_SECS
+        """Return frames from the speech window [speech_start, speech_end].
+
+        When max_frames == 1, returns the most recent frame (best context).
+        When max_frames > 1, evenly samples across the window including
+        PRE_SPEECH_SECS lookback for temporal context.
+        """
+        if max_frames > 1:
+            window_start = speech_start - PRE_SPEECH_SECS
+        else:
+            window_start = speech_start
+
         with self._lock:
             candidates = [(t, f) for t, f in self._ring
                           if window_start <= t <= speech_end]
@@ -138,7 +148,9 @@ class Camera:
                 else:
                     return []
 
-        if len(candidates) <= max_frames:
+        if max_frames == 1:
+            selected = [candidates[-1][1]]
+        elif len(candidates) <= max_frames:
             selected = [f for _, f in candidates]
         else:
             step = len(candidates) / max_frames
@@ -157,6 +169,21 @@ class Camera:
             if not self._ring:
                 return None
             _, frame = self._ring[-1]
+        return self._encode_frame(frame)
+
+    def read_live(self) -> Optional[str]:
+        """Read a fresh frame directly from the camera hardware.
+
+        Unlike capture_single() (which reads from the 3fps ring buffer),
+        this can be called at any rate for a smooth UI stream without
+        affecting the VLM ring buffer.
+        """
+        if self._cap is None or not self._cap.isOpened():
+            return None
+        with self._cap_lock:
+            ret, frame = self._cap.read()
+        if not ret:
+            return None
         return self._encode_frame(frame)
 
     @property

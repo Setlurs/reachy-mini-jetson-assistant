@@ -29,6 +29,10 @@ opencv-python-headless>=4.8.0
 # RAG — vector store + embeddings
 chromadb>=0.4.0
 
+# Web UI (optional — only needed for run_web_vision_chat.py)
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
 # Reachy Mini SDK (robot control)
 # Installed separately: pip install reachy-mini
 
