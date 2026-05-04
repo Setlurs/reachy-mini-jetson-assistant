@@ -15,15 +15,24 @@
 
 """Reachy Mini connection helpers.
 
-Shared across run_vision_chat.py, run_web_vision_chat.py, and any
-future entry point that needs robot control.
+Shared across run_vision_chat.py, run_web_vision_chat.py, and any future
+entry point that needs robot control.
+
+Two connection modes:
+
+* Wired (Reachy Mini Lite): USB-tethered, daemon spawned locally,
+  media_backend="no_media". The app reads the local USB camera/audio.
+* Wireless (Reachy Mini Wireless CM4): no USB tether possible. The daemon
+  runs on the robot itself; we connect over the network and route camera/
+  mic/speaker through robot.media — WebRTC by default, or GStreamer when
+  the app happens to run on the robot's own CM4 (--on-device).
 """
 
 import os
 import signal
 import subprocess
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 from rich.console import Console
 
@@ -91,36 +100,170 @@ def kill_stale_camera_holders(device: int, console: Console) -> None:
         pass
 
 
+def _resolve_connection_mode(rcfg) -> Tuple[str, bool, bool]:
+    """Translate (wireless, on_device, media_backend) into ReachyMini kwargs.
+
+    Returns (media_backend, localhost_only, spawn_daemon).
+    """
+    wireless = bool(getattr(rcfg, "wireless", False))
+    on_device = bool(getattr(rcfg, "on_device", False))
+
+    if not wireless:
+        # Wired USB (Reachy Mini Lite) — keep existing behavior.
+        return rcfg.media_backend, True, rcfg.spawn_daemon
+
+    if on_device:
+        # Wireless robot, daemon co-located with the app (e.g. running on
+        # the CM4 itself). GStreamer talks to the local pipeline directly.
+        return "gstreamer", True, rcfg.spawn_daemon
+
+    # Fully remote — daemon runs on the robot, we talk over the network.
+    return "webrtc", False, False
+
+
+def is_wireless(config) -> bool:
+    """Used by entry points to pick local vs robot-media camera + mic."""
+    return bool(getattr(config.reachy, "wireless", False))
+
+
+def apply_cli_overrides(config, args) -> None:
+    """Apply --wireless / --on-device CLI flags onto config.reachy.
+
+    Both flags are tri-state via argparse (default None = keep config). This
+    keeps the YAML defaults usable while CLI flags can flip them at runtime.
+    """
+    if getattr(args, "wireless", None) is not None:
+        config.reachy.wireless = bool(args.wireless)
+    if getattr(args, "on_device", None) is not None:
+        config.reachy.on_device = bool(args.on_device)
+
+
+def add_connection_args(parser) -> None:
+    """Add --wireless / --on-device flags to an argparse parser.
+
+    --wireless / --no-wireless and --on-device / --no-on-device let users
+    override config.reachy.wireless / on_device per-invocation. Default is
+    None so we can tell "user didn't pass it" from "user said False".
+    """
+    g = parser.add_argument_group("Reachy Mini connection")
+    w = g.add_mutually_exclusive_group()
+    w.add_argument("--wireless", dest="wireless", action="store_true", default=None,
+                   help="Use Reachy Mini Wireless (CM4) — media via WebRTC/GStreamer")
+    w.add_argument("--no-wireless", dest="wireless", action="store_false",
+                   help="Force wired USB mode (Reachy Mini Lite)")
+    o = g.add_mutually_exclusive_group()
+    o.add_argument("--on-device", dest="on_device", action="store_true", default=None,
+                   help="App is running on the robot itself — use GStreamer instead of WebRTC")
+    o.add_argument("--off-device", dest="on_device", action="store_false",
+                   help="App is on a separate host — use WebRTC (default for --wireless)")
+
+
+def build_camera(config, console, robot):
+    """Build the wired or wireless camera depending on config.reachy.wireless.
+
+    Lives in app.reachy because choosing media routing is a connection-mode
+    decision; placing it here also avoids a circular import between
+    app.camera and app.pipeline. Returns the (already constructed, not
+    started) camera, or None if camera support is unavailable.
+    """
+    from app.camera import Camera, RobotCamera
+
+    if is_wireless(config):
+        if robot is None:
+            console.print("[red]Wireless mode requires a connected robot for camera access.[/red]")
+            return None
+        return RobotCamera(
+            robot=robot,
+            width=config.vision.width,
+            height=config.vision.height,
+            jpeg_quality=config.vision.jpeg_quality,
+            capture_fps=config.vision.capture_fps,
+        )
+
+    return Camera(
+        device=config.vision.camera_device,
+        width=config.vision.width,
+        height=config.vision.height,
+        jpeg_quality=config.vision.jpeg_quality,
+        capture_fps=config.vision.capture_fps,
+    )
+
+
+def build_mic(config, console, robot, chunk_ms: int):
+    """Build the wired or wireless mic recorder.
+
+    Returns the (already constructed, not started) recorder, or None on
+    failure. The wired path also needs the ALSA hw string and mic hint, so
+    we surface those in the return tuple alongside the recorder.
+
+    Returns: (recorder, hw, mic_hint) where hw and mic_hint are None for
+    the wireless path (unused).
+    """
+    from app.audio import find_alsa_device
+    from app.pipeline import MicRecorder, RobotMicRecorder
+
+    if is_wireless(config):
+        if robot is None:
+            console.print("[red]Wireless mode requires a connected robot for mic access.[/red]")
+            return None, None, None
+        return RobotMicRecorder(console, robot=robot, chunk_ms=chunk_ms), None, None
+
+    hint = config.audio.input_device or "Reachy Mini Audio"
+    result = find_alsa_device(name_hint=hint)
+    if not result:
+        console.print("[red]No mic found![/red]")
+        return None, None, None
+    card, dev, mic_name = result
+    hw = f"hw:{card},{dev}"
+    console.print(f"  Mic: {hw} ({mic_name})")
+    return MicRecorder(console, chunk_ms=chunk_ms), hw, hint
+
+
 def connect(config, console: Console) -> Optional["ReachyMini"]:
     """Connect to Reachy Mini using config.reachy settings.
 
-    Handles daemon discovery, retries, wake-up, and antenna positioning.
+    Handles daemon discovery, retries, wake-up, antenna positioning, and
+    wired/wireless backend selection.
     Returns a connected ReachyMini instance, or None if unavailable.
     """
     if not HAS_REACHY or not config.reachy.enabled:
         return None
 
     rcfg = config.reachy
+    media_backend, localhost_only, spawn_daemon = _resolve_connection_mode(rcfg)
     daemon_already_running = is_daemon_running()
+
+    if rcfg.wireless and rcfg.on_device:
+        mode_label = "wireless / gstreamer (on-device)"
+    elif rcfg.wireless:
+        mode_label = "wireless / webrtc (remote daemon)"
+    else:
+        mode_label = "wired USB"
 
     for attempt in range(rcfg.daemon_retry_attempts):
         try:
             if attempt == 0:
-                console.print("  Connecting to Reachy Mini...")
+                console.print(f"  Connecting to Reachy Mini [{mode_label}]...")
             elif attempt == 1:
                 console.print(f"  [dim]Daemon may still be starting, waiting {rcfg.daemon_startup_wait:.0f}s...[/dim]")
                 time.sleep(rcfg.daemon_startup_wait)
                 console.print("  Retrying connection to Reachy Mini...")
             else:
-                kill_daemon(console)
+                if spawn_daemon:
+                    kill_daemon(console)
                 console.print("  Retrying connection (fresh daemon)...")
 
-            reachy = ReachyMini(
-                spawn_daemon=rcfg.spawn_daemon,
+            kwargs = dict(
+                spawn_daemon=spawn_daemon,
                 use_sim=False,
                 timeout=rcfg.timeout,
-                media_backend=rcfg.media_backend,
+                media_backend=media_backend,
             )
+            if not localhost_only:
+                # Allow SDK to discover the daemon over the network.
+                kwargs["localhost_only"] = False
+
+            reachy = ReachyMini(**kwargs)
 
             reachy.enable_motors()
             if rcfg.wake_on_start:

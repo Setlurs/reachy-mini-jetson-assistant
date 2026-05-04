@@ -6,7 +6,12 @@
   <a href="https://developer.nvidia.com/embedded/jetson-orin-nano"><img src="docs/images/jetson-family.png" alt="NVIDIA Jetson" height="180"/></a>
 </p>
 
-A low-latency, fully on-device voice and vision assistant for [Reachy Mini Lite](https://www.pollen-robotics.com/reachy-mini/) powered by NVIDIA Jetson. Everything runs locally with GPU acceleration — no cloud, no API keys, no internet required at runtime.
+A low-latency, fully on-device voice and vision assistant for [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) powered by NVIDIA Jetson. Everything runs locally with GPU acceleration — no cloud, no API keys, no internet required at runtime.
+
+Two robot connection modes are supported:
+
+* **Wireless** (default) — Reachy Mini Wireless (CM4) over WebRTC. Camera, mic, and speaker stream through `robot.media` from the SDK. Requires the `reachy-mini-daemon` (≥ 1.7.0) running on the robot.
+* **Wired** — Reachy Mini Lite tethered over USB. Local camera (V4L2) and audio (ALSA / PulseAudio).
 
 > **Current target:** Jetson Orin Nano 8GB (JetPack 6.x, Python 3.10)
 >
@@ -57,8 +62,10 @@ Speak to Reachy Mini and it responds using a vision-language model that sees thr
 ## Prerequisites
 
 - **NVIDIA Jetson Orin Nano** (8GB) with JetPack 6.x, Python 3.10, Docker + NVIDIA runtime
-- **[Reachy Mini Lite](https://huggingface.co/docs/reachy_mini/platforms/reachy_mini_lite/get_started)** connected via USB
 - **NVMe SSD** recommended for swap and model storage
+- One of:
+  - **[Reachy Mini Wireless (CM4)](https://huggingface.co/docs/reachy_mini/)** — wireless WebRTC (default). Daemon ≥ 1.7.0 must be running on the robot.
+  - **[Reachy Mini Lite](https://huggingface.co/docs/reachy_mini/platforms/reachy_mini_lite/get_started)** — wired USB. Pass `--no-wireless` (or set `reachy.wireless: false`).
 
 ## Setup
 
@@ -68,7 +75,7 @@ See **[SETUP.md](SETUP.md)** for the full installation guide — hardware setup,
 
 ### Quick Start (Vision Chat with Web UI)
 
-This is the recommended mode — VLM + camera + voice + browser dashboard:
+This is the recommended mode — VLM + camera + voice + browser dashboard.
 
 **Terminal 1** — Start the VLM server:
 
@@ -82,12 +89,22 @@ Wait until you see `llama server listening at http://0.0.0.0:8080`.
 
 ```bash
 source venv/bin/activate
-python3 run_web_vision_chat.py
+python3 run_web_vision_chat.py                # default: wireless robot
+python3 run_web_vision_chat.py --no-wireless  # wired Reachy Mini Lite
 ```
 
-Open `http://<jetson-ip>:8090` in a browser to see the live UI with camera feed, conversation log, and system stats. The robot listens through its microphone and responds via VLM + TTS.
+Open `http://<jetson-ip>:8090` in a browser for the live UI. The robot's microphone, camera, and speakers are streamed through `robot.media` (WebRTC) in wireless mode; through the local USB device in wired mode.
 
 Press **Ctrl+C** once to exit cleanly (robot will go to sleep position).
+
+### Connection mode flags
+
+All entry points accept the same flags:
+
+| Flag | Effect |
+|------|--------|
+| `--wireless` / `--no-wireless` | Force wireless / wired (overrides `reachy.wireless` in YAML) |
+| `--on-device` / `--off-device` | Set when the app runs on the robot's CM4 itself (uses GStreamer instead of WebRTC) |
 
 ### Vision Chat (Terminal Only)
 

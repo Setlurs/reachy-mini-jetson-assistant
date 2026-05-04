@@ -101,9 +101,18 @@ emotion:
 
 reachy:
   enabled: true                       # set false to skip robot connection entirely
-  spawn_daemon: true
+  # Defaults target the Reachy Mini Wireless (CM4) with the reachy-mini-daemon
+  # (1.7.0) already running on the robot. The app runs on a separate host
+  # (Mac or Jetson) and connects over WebRTC, so it does NOT spawn a daemon
+  # and does NOT use a local USB camera/audio device.
+  #   wired Reachy Mini Lite users: set wireless: false, spawn_daemon: true,
+  #   media_backend: "no_media".
+  #   running the app on the CM4 itself: set on_device: true (uses GStreamer).
+  wireless: true
+  on_device: false
+  spawn_daemon: false
   timeout: 30.0                       # Zenoh connection timeout (seconds)
-  media_backend: "no_media"           # "no_media" = our app handles camera/audio
+  media_backend: "no_media"           # only used when wireless=false (USB)
   wake_on_start: true                 # call wake_up() on fresh daemon start
   sleep_on_exit: true                 # call goto_sleep() on exit (blocks ~4s)
   antenna_rest_position: [0.0, 0.0]   # antenna target after wake-up

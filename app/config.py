@@ -90,9 +90,17 @@ class VisionConfig:
 @dataclass
 class ReachyConfig:
     enabled: bool = True
-    spawn_daemon: bool = True
+    # Defaults target a Reachy Mini Wireless (CM4) with reachy-mini-daemon
+    # 1.7.0 already running on the robot. CLI flags --wireless / --no-wireless
+    # / --on-device / --off-device override these at runtime.
+    #   wireless=True,  on_device=False → media_backend="webrtc"   (default)
+    #   wireless=True,  on_device=True  → media_backend="gstreamer" (app on CM4)
+    #   wireless=False                  → wired USB (Reachy Mini Lite)
+    wireless: bool = True
+    on_device: bool = False
+    spawn_daemon: bool = False
     timeout: float = 30.0
-    media_backend: str = "no_media"
+    media_backend: str = "no_media"     # only used when wireless=False
     wake_on_start: bool = True
     sleep_on_exit: bool = False
     antenna_rest_position: List[float] = field(default_factory=lambda: [0.0, 0.0])

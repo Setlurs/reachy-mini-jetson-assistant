@@ -19,10 +19,13 @@ Voice Chat — speak anytime, dynamic recording.
 Mic -> Silero/energy VAD -> STT -> (RAG) -> LLM stream -> TTS stream -> Speaker
 
 Usage:
-  python3 run_voice_chat.py            # with RAG
-  python3 run_voice_chat.py --no-rag   # without RAG
+  python3 run_voice_chat.py                       # wired, with RAG
+  python3 run_voice_chat.py --no-rag              # wired, without RAG
+  python3 run_voice_chat.py --wireless            # Reachy Mini Wireless (WebRTC)
+  python3 run_voice_chat.py --wireless --on-device  # GStreamer, app on robot CM4
 """
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -30,12 +33,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.config import Config
-from app.audio import find_alsa_device
 from app.stt import STT
 from app.llm import LLM
 from app.tts import create_tts
 from app.pipeline import (
-    SAMPLE_RATE, MicRecorder, warmup_stt, vad_loop, stream_and_speak, load_silero,
+    SAMPLE_RATE, warmup_stt, vad_loop, stream_and_speak, load_silero,
+)
+from app.reachy import (
+    add_connection_args, apply_cli_overrides, build_mic,
+    connect as connect_reachy, is_wireless,
 )
 from rich.console import Console
 from rich.panel import Panel
@@ -44,8 +50,14 @@ console = Console()
 
 
 def main():
-    use_rag = "--no-rag" not in sys.argv
+    parser = argparse.ArgumentParser(description="Voice Chat")
+    parser.add_argument("--no-rag", action="store_true", help="Disable RAG retrieval")
+    add_connection_args(parser)
+    args = parser.parse_args()
+
+    use_rag = not args.no_rag
     config = Config.load()
+    apply_cli_overrides(config, args)
     active_system_prompt = config.llm.system_prompt if use_rag else config.llm.system_prompt_no_rag
 
     console.print(Panel.fit(
@@ -55,14 +67,8 @@ def main():
         border_style="cyan",
     ))
 
-    # ── Audio setup ──────────────────────────────────────────────
-    result = find_alsa_device(name_hint=config.audio.input_device or "Reachy Mini Audio")
-    if not result:
-        console.print("[red]No mic found![/red]")
-        return
-    card, dev, mic_name = result
-    hw = f"hw:{card},{dev}"
-    console.print(f"  Mic: {hw} ({mic_name})")
+    # ── Reachy Mini (needed up-front in wireless mode for media access) ──
+    reachy = connect_reachy(config, console) if is_wireless(config) else None
 
     # ── Load models ──────────────────────────────────────────────
     console.print("\n[bold]Loading...[/bold]")
@@ -120,10 +126,10 @@ def main():
         except Exception as e:
             console.print(f"  ⚠ RAG: {e}")
 
-    # ── Start mic ────────────────────────────────────────────────
+    # ── Start mic (wired or wireless via robot.media) ────────────
     effective_chunk_ms = 32 if silero_model else config.vad.chunk_ms
-    mic = MicRecorder(console, chunk_ms=effective_chunk_ms)
-    if not mic.start(hw, config.audio.input_device or "Reachy Mini Audio"):
+    mic, hw, hint = build_mic(config, console, reachy, chunk_ms=effective_chunk_ms)
+    if mic is None or not mic.start(hw, hint):
         console.print("[red]Cannot start recording! Check mic.[/red]")
         return
 

@@ -123,8 +123,41 @@ def find_pa_sink(name_hint: str) -> Optional[str]:
     return None
 
 
-def play_audio(audio: np.ndarray, sample_rate: int, sink: Optional[str] = None):
-    """Play int16 audio via paplay (PulseAudio) or aplay fallback."""
+def play_audio(audio: np.ndarray, sample_rate: int, sink=None):
+    """Play int16 audio.
+
+    `sink` is the routing hint:
+      * None or PulseAudio sink name (str) → wired path: paplay/aplay.
+      * A ReachyMini robot instance → wireless path: push float32 samples
+        to the robot's speakers via robot.media.push_audio_sample().
+
+    The two paths are chosen by isinstance check rather than a flag so
+    callers stay generic (they just hand off whatever the MicRecorder
+    exposes as pa_sink).
+    """
+    # Wireless path — push to the robot speaker over WebRTC/GStreamer.
+    if sink is not None and not isinstance(sink, str):
+        robot = sink
+        try:
+            target_sr = robot.media.get_output_audio_samplerate() or sample_rate
+        except Exception:
+            target_sr = sample_rate
+        try:
+            float_pcm = audio.astype(np.float32) / 32768.0
+            if target_sr and target_sr > 0 and target_sr != sample_rate and float_pcm.size > 1:
+                # Linear resample. Quality is fine for TTS; matches the
+                # reference repo's scipy.signal.resample length-based call.
+                n_in = float_pcm.shape[0]
+                n_out = max(1, int(round(n_in * target_sr / sample_rate)))
+                xp = np.linspace(0.0, 1.0, n_in, endpoint=False, dtype=np.float32)
+                xq = np.linspace(0.0, 1.0, n_out, endpoint=False, dtype=np.float32)
+                float_pcm = np.interp(xq, xp, float_pcm).astype(np.float32)
+            robot.media.push_audio_sample(float_pcm)
+        except Exception as e:
+            print(f"  [audio] robot push failed: {e}", file=sys.stderr)
+        return
+
+    # Wired path (Linux/Jetson): paplay (PulseAudio) or aplay fallback.
     raw = audio.astype(np.int16).tobytes()
     try:
         if sink:
@@ -312,6 +345,157 @@ class MicRecorder:
         if self._proc:
             self._proc.terminate()
             self._proc.wait(timeout=2)
+
+
+# ── Robot-media mic recorder (wireless mode) ──────────────────────
+
+class RobotMicRecorder:
+    """Mic recorder that pulls audio from the Reachy Mini SDK's media backend.
+
+    Used in wireless mode where there is no local USB audio device — the
+    robot's microphones are the only ones available, exposed by the SDK
+    as float32 samples over WebRTC (or GStreamer when on-device).
+
+    Exposes the same surface as MicRecorder (audio_q, pause/resume/stop,
+    listening, pa_sink, alive) so vad_loop and stream_and_speak don't
+    need to know which backend is in use. pa_sink is set to the robot
+    instance so play_audio() routes TTS back through robot.media.
+    """
+
+    def __init__(self, console: Console, robot, chunk_ms: int = 32):
+        self.console = console
+        self.robot = robot
+        self.chunk_ms = chunk_ms
+        self.chunk_samples = int(SAMPLE_RATE * chunk_ms / 1000)
+        self.chunk_bytes = self.chunk_samples * CHANNELS * 2
+        self.audio_q: queue.Queue[bytes] = queue.Queue()
+        self.listening = threading.Event()
+        self.listening.set()
+        self.alive = True
+        self._thread: Optional[threading.Thread] = None
+        self._input_sr: int = SAMPLE_RATE
+        # play_audio() inspects this — non-string, non-None means "push to
+        # the robot speaker via SDK".
+        self.pa_source: Optional[str] = None
+        self.pa_sink = robot
+
+    def start(self, *_args, **_kwargs) -> bool:
+        """Start the robot's audio pipelines and the reader thread.
+
+        Accepts ignored positional/keyword args for surface compatibility
+        with MicRecorder.start(hw, mic_hint), so the entry-point factory
+        can call rec.start(hw, hint) generically.
+        """
+        try:
+            self.robot.media.start_recording()
+            try:
+                self.robot.media.start_playing()
+            except Exception:
+                pass
+            self._input_sr = self.robot.media.get_input_audio_samplerate() or SAMPLE_RATE
+        except Exception as e:
+            self.console.print(f"  [red]Robot mic start failed: {e}[/red]")
+            return False
+
+        self.console.print(
+            f"  Mic: robot.media (input_sr={self._input_sr}Hz → {SAMPLE_RATE}Hz)"
+        )
+
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+        # Quick liveness check — wait briefly for first frames.
+        time.sleep(0.5)
+        test_chunks = []
+        for _ in range(10):
+            try:
+                test_chunks.append(self.audio_q.get(timeout=0.5))
+            except queue.Empty:
+                break
+        if test_chunks:
+            r = chunk_rms(b"".join(test_chunks))
+            if r > 0.003:
+                self.console.print("  Mic: [green]✓ live[/green]")
+            else:
+                self.console.print("  Mic: [yellow]quiet — speak into the robot[/yellow]")
+        else:
+            self.console.print("  [yellow]Mic: no frames yet (WebRTC may still be negotiating)[/yellow]")
+        return True
+
+    def _reader(self):
+        """Pull float32 samples from robot.media, mix to mono, resample to
+        16 kHz, and emit fixed-size int16 PCM chunks into audio_q."""
+        leftover = np.zeros(0, dtype=np.float32)
+        target_per_chunk = self.chunk_samples
+        in_sr = self._input_sr or SAMPLE_RATE
+        ratio = SAMPLE_RATE / float(in_sr) if in_sr > 0 else 1.0
+
+        while self.alive:
+            try:
+                frame = self.robot.media.get_audio_sample()
+            except Exception:
+                time.sleep(0.01)
+                continue
+            if frame is None:
+                time.sleep(0.005)
+                continue
+
+            arr = np.asarray(frame, dtype=np.float32)
+            # Mix down to mono if multi-channel.
+            if arr.ndim == 2:
+                # sounddevice convention: (samples, channels)
+                if arr.shape[1] < arr.shape[0]:
+                    arr = arr.mean(axis=1)
+                else:
+                    arr = arr.mean(axis=0)
+            elif arr.ndim != 1:
+                arr = arr.flatten()
+
+            # Resample to 16 kHz with linear interpolation if needed.
+            if abs(ratio - 1.0) > 1e-3 and arr.size > 1:
+                n_out = max(1, int(round(arr.size * ratio)))
+                xp = np.linspace(0.0, 1.0, arr.size, endpoint=False, dtype=np.float32)
+                xq = np.linspace(0.0, 1.0, n_out, endpoint=False, dtype=np.float32)
+                arr = np.interp(xq, xp, arr).astype(np.float32)
+
+            leftover = np.concatenate([leftover, arr])
+
+            while leftover.size >= target_per_chunk:
+                chunk = leftover[:target_per_chunk]
+                leftover = leftover[target_per_chunk:]
+                if not self.listening.is_set():
+                    continue
+                pcm = (np.clip(chunk, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+                self.audio_q.put(pcm)
+
+    def flush(self):
+        while not self.audio_q.empty():
+            try:
+                self.audio_q.get_nowait()
+            except queue.Empty:
+                break
+
+    def pause(self):
+        self.listening.clear()
+        self.flush()
+
+    def resume(self):
+        self.flush()
+        self.listening.set()
+
+    def stop(self):
+        self.alive = False
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
+        try:
+            self.robot.media.stop_recording()
+        except Exception:
+            pass
+        try:
+            self.robot.media.stop_playing()
+        except Exception:
+            pass
 
 
 # ── VAD loop ──────────────────────────────────────────────────────

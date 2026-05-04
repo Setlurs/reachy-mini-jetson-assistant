@@ -222,3 +222,175 @@ class Camera:
             self._cap.release()
             self._cap = None
         self._ring.clear()
+
+
+# ── Robot-media camera (wireless mode) ────────────────────────────
+
+
+class RobotCamera:
+    """Camera that reads frames from the Reachy Mini SDK's media backend.
+
+    Used in wireless mode where there is no local USB camera — the robot
+    streams its own camera frames over WebRTC (or GStreamer when running
+    on-device). Exposes the same surface as Camera so entry points and the
+    web UI's frame broadcaster don't care which backend is in use.
+
+    Frame retrieval is non-blocking: the SDK's get_frame() returns the
+    latest available frame (BGR uint8) or None while the pipeline is
+    still warming up.
+    """
+
+    def __init__(
+        self,
+        robot,
+        width: int = 640,
+        height: int = 480,
+        jpeg_quality: int = 80,
+        capture_fps: float = 3.0,
+    ):
+        self.robot = robot
+        # Width/height come from the robot's pipeline, not from us; kept as
+        # hints for diagnostics and for status panels that read them.
+        self.width = width
+        self.height = height
+        self.jpeg_quality = jpeg_quality
+        self.capture_fps = capture_fps
+        self._ring: deque[tuple[float, np.ndarray]] = deque(
+            maxlen=max(1, int(capture_fps * (MAX_SPEECH_SECS + PRE_SPEECH_SECS)))
+        )
+        self._lock = threading.Lock()
+        self._alive = False
+        self._thread: Optional[threading.Thread] = None
+        self._actual_fps: float = 0.0
+
+    def _get_frame_safe(self) -> Optional[np.ndarray]:
+        try:
+            return self.robot.media.get_frame()
+        except Exception:
+            return None
+
+    def open(self) -> bool:
+        # The SDK opened the WebRTC/GStreamer pipeline at robot connection
+        # time; we just verify a frame is reachable. Don't fail hard on the
+        # first poll — the pipeline may still be negotiating.
+        for _ in range(20):  # ~2s
+            if self._get_frame_safe() is not None:
+                return True
+            time.sleep(0.1)
+        # Even if no frame yet, allow start() — capture loop will keep trying.
+        return True
+
+    def start(self) -> bool:
+        if not self.open():
+            return False
+        self._alive = True
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+        return True
+
+    def _capture_loop(self):
+        interval = 1.0 / self.capture_fps
+        t_last = 0.0
+        n_frames = 0
+        t_start = time.monotonic()
+        while self._alive:
+            now = time.monotonic()
+            sleep_for = interval - (now - t_last)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            t_last = time.monotonic()
+
+            frame = self._get_frame_safe()
+            if frame is None:
+                continue
+            with self._lock:
+                self._ring.append((time.monotonic(), frame))
+            n_frames += 1
+            elapsed = time.monotonic() - t_start
+            if elapsed > 0:
+                self._actual_fps = n_frames / elapsed
+
+    def _encode_frame(self, frame: np.ndarray) -> Optional[str]:
+        ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+        if not ok:
+            return None
+        return base64.b64encode(jpg.tobytes()).decode("ascii")
+
+    def get_speech_frames(
+        self,
+        speech_start: float,
+        speech_end: float,
+        max_frames: int = 3,
+    ) -> list[str]:
+        if max_frames > 1:
+            window_start = speech_start - PRE_SPEECH_SECS
+        else:
+            window_start = speech_start
+
+        with self._lock:
+            candidates = [(t, f) for t, f in self._ring
+                          if window_start <= t <= speech_end]
+
+        if not candidates:
+            with self._lock:
+                if self._ring:
+                    candidates = [(self._ring[-1][0], self._ring[-1][1])]
+                else:
+                    return []
+
+        if max_frames == 1:
+            selected = [candidates[-1][1]]
+        elif len(candidates) <= max_frames:
+            selected = [f for _, f in candidates]
+        else:
+            step = len(candidates) / max_frames
+            selected = [candidates[int(i * step)][1] for i in range(max_frames)]
+
+        result = []
+        for frame in selected:
+            b64 = self._encode_frame(frame)
+            if b64:
+                result.append(b64)
+        return result
+
+    def capture_single(self) -> Optional[str]:
+        with self._lock:
+            if not self._ring:
+                return None
+            _, frame = self._ring[-1]
+        return self._encode_frame(frame)
+
+    def read_live(self) -> Optional[str]:
+        """Pull the latest frame from the SDK, falling back to the ring.
+
+        The web UI's broadcast loop calls this at UI fps; falling back to
+        the most recent ring-buffer frame keeps the browser preview from
+        going dark between SDK polls.
+        """
+        frame = self._get_frame_safe()
+        if frame is None:
+            with self._lock:
+                if self._ring:
+                    frame = self._ring[-1][1]
+                else:
+                    return None
+        return self._encode_frame(frame)
+
+    @property
+    def buffer_count(self) -> int:
+        with self._lock:
+            return len(self._ring)
+
+    @property
+    def actual_fps(self) -> float:
+        return self._actual_fps
+
+    def health_check(self) -> bool:
+        return self._alive
+
+    def close(self):
+        self._alive = False
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
+        self._ring.clear()

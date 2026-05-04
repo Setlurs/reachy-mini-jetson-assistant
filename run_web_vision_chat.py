@@ -37,17 +37,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.config import Config
-from app.audio import find_alsa_device
 from app.stt import STT
 from app.llm import LLM
 from app.tts import create_tts
-from app.camera import Camera
 from app.monitor import get_system_stats, get_jetson_model
 from app.pipeline import (
-    SAMPLE_RATE, TTS_BREAKS, MicRecorder, warmup_stt, vad_loop,
+    SAMPLE_RATE, TTS_BREAKS, warmup_stt, vad_loop,
     tts_player, load_silero,
 )
-from app.reachy import kill_stale_camera_holders, connect as connect_reachy
+from app.reachy import (
+    add_connection_args, apply_cli_overrides, build_camera, build_mic,
+    kill_stale_camera_holders, connect as connect_reachy, is_wireless,
+)
 from app.emotion import EmotionDetector
 from app.movements import MovementController
 from app.web import Broadcaster, start_web_server
@@ -113,9 +114,11 @@ def main():
     parser = argparse.ArgumentParser(description="Vision Chat with Web UI")
     parser.add_argument("--host", default=None, help="Web server bind address")
     parser.add_argument("--port", type=int, default=None, help="Web server port")
+    add_connection_args(parser)
     args = parser.parse_args()
 
     config = Config.load()
+    apply_cli_overrides(config, args)
     web_host = args.host or config.web.host
     web_port = args.port or config.web.port
     broadcaster = Broadcaster()
@@ -130,34 +133,28 @@ def main():
     # ── Reachy Mini ──────────────────────────────────────────────
     reachy = connect_reachy(config, console)
 
-    # ── Audio setup ──────────────────────────────────────────────
-    result = find_alsa_device(name_hint=config.audio.input_device or "Reachy Mini Audio")
-    if not result:
-        console.print("[red]No mic found![/red]")
-        return
-    card, dev, mic_name = result
-    hw = f"hw:{card},{dev}"
-    console.print(f"  Mic: {hw} ({mic_name})")
-
     # ── Camera setup ─────────────────────────────────────────────
-    kill_stale_camera_holders(config.vision.camera_device, console)
+    if not is_wireless(config):
+        kill_stale_camera_holders(config.vision.camera_device, console)
 
-    cam = Camera(
-        device=config.vision.camera_device,
-        width=config.vision.width,
-        height=config.vision.height,
-        jpeg_quality=config.vision.jpeg_quality,
-        capture_fps=config.vision.capture_fps,
-    )
-    if cam.start():
+    cam = build_camera(config, console, reachy)
+    if cam is None or not cam.start():
+        if is_wireless(config):
+            console.print("[red]  ✗ Robot camera unavailable (WebRTC media not ready?).[/red]")
+        else:
+            console.print("[red]  ✗ Camera not found! Check USB webcam.[/red]")
+        return
+    if is_wireless(config):
+        console.print(
+            f"  ✓ Camera robot.media "
+            f"({config.vision.capture_fps} fps ring buffer)"
+        )
+    else:
         console.print(
             f"  ✓ Camera /dev/video{config.vision.camera_device} "
             f"({config.vision.width}x{config.vision.height}, "
             f"{config.vision.capture_fps} fps ring buffer)"
         )
-    else:
-        console.print("[red]  ✗ Camera not found! Check USB webcam.[/red]")
-        return
 
     # ── Pre-declare variables for cleanup closure ───────────────
     mic = None
@@ -254,10 +251,10 @@ def main():
             console.print("  ⚠ Emotion detector unavailable")
             emotion_detector = None
 
-    # ── Start mic ────────────────────────────────────────────────
+    # ── Start mic (wired or wireless via robot.media) ────────────
     effective_chunk_ms = 32 if silero_model else config.vad.chunk_ms
-    mic = MicRecorder(console, chunk_ms=effective_chunk_ms)
-    if not mic.start(hw, config.audio.input_device or "Reachy Mini Audio"):
+    mic, hw, hint = build_mic(config, console, reachy, chunk_ms=effective_chunk_ms)
+    if mic is None or not mic.start(hw, hint):
         console.print("[red]Cannot start recording! Check mic.[/red]")
         cam.close()
         return
