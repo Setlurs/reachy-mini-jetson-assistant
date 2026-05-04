@@ -60,10 +60,15 @@ def main():
         import onnxruntime as ort
 
         available = ort.get_available_providers()
+        # Provider preference: CUDA (Jetson) > TensorRT > CoreML (Apple
+        # Silicon) > CPU (the default kokoro_onnx falls back to). The
+        # Kokoro library reads ONNX_PROVIDER from the environment.
         if "CUDAExecutionProvider" in available:
             os.environ["ONNX_PROVIDER"] = "CUDAExecutionProvider"
         elif "TensorrtExecutionProvider" in available:
             os.environ["ONNX_PROVIDER"] = "TensorrtExecutionProvider"
+        elif "CoreMLExecutionProvider" in available:
+            os.environ["ONNX_PROVIDER"] = "CoreMLExecutionProvider"
 
         from kokoro_onnx import Kokoro
         kokoro = Kokoro(str(model_path), str(voices_path))

@@ -13,12 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""System monitor — CPU, RAM, GPU stats for Jetson."""
+"""System monitor — CPU, RAM, GPU stats. Linux/Jetson + macOS."""
 
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
+
+from app.platform_utils import is_macos
 
 
 @dataclass
@@ -85,7 +87,15 @@ _GPU_SYSFS_PATHS = [
 
 @lru_cache(maxsize=1)
 def get_jetson_model() -> str:
-    """Return a clean Jetson model name like 'Jetson Orin Nano Super'."""
+    """Return a clean platform name.
+
+    On Jetson: 'Jetson Orin Nano Super' from /proc/device-tree.
+    On macOS:  e.g. 'MacBook Pro (Apple M3 Pro)' from sysctl.
+    Otherwise: 'Jetson' as a last-resort fallback (kept for backwards
+    compatibility with code that imports this name).
+    """
+    if is_macos():
+        return _macos_model()
     try:
         with open("/proc/device-tree/model") as f:
             raw = f.read().strip().rstrip("\x00")
@@ -95,7 +105,33 @@ def get_jetson_model() -> str:
         return "Jetson"
 
 
+def get_platform_name() -> str:
+    """Friendlier alias; same as get_jetson_model()."""
+    return get_jetson_model()
+
+
+def _macos_model() -> str:
+    try:
+        model = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        chip = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        if model and chip:
+            return f"{model} ({chip})"
+        return model or chip or "Mac"
+    except Exception:
+        return "Mac"
+
+
 def _gpu() -> Optional[float]:
+    # Apple Silicon GPU usage isn't accessible without `powermetrics` (root).
+    # Skip on macOS; the UI handles a missing value gracefully.
+    if is_macos():
+        return None
     for path in _GPU_SYSFS_PATHS:
         try:
             with open(path) as f:

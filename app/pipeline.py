@@ -35,19 +35,23 @@ from rich.console import Console
 
 from app.audio import kill_pulseaudio
 from app.config import VADConfig
+from app.platform_utils import is_linux
 
 # Suppress noisy ALSA error messages (underrun warnings etc.)
 # The callback reference must be kept alive to avoid segfault from GC.
+# Linux-only — libasound doesn't exist on macOS, and the wireless path
+# never touches ALSA anyway, so this whole block can be skipped off-Linux.
 _ALSA_ERR_T = None
 _alsa_handler = None
-try:
-    import ctypes
-    _ALSA_ERR_T = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
-                                    ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
-    _alsa_handler = _ALSA_ERR_T(lambda *_: None)
-    ctypes.cdll.LoadLibrary('libasound.so.2').snd_lib_error_set_handler(_alsa_handler)
-except Exception:
-    pass
+if is_linux():
+    try:
+        import ctypes
+        _ALSA_ERR_T = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
+                                        ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+        _alsa_handler = _ALSA_ERR_T(lambda *_: None)
+        ctypes.cdll.LoadLibrary('libasound.so.2').snd_lib_error_set_handler(_alsa_handler)
+    except Exception:
+        pass
 
 
 # ── Audio constants (fixed by hardware, not user-tunable) ────────

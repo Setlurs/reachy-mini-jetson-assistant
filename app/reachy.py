@@ -36,6 +36,8 @@ from typing import Optional, Tuple
 
 from rich.console import Console
 
+from app.platform_utils import is_linux
+
 try:
     from reachy_mini import ReachyMini
     import psutil
@@ -81,7 +83,13 @@ def kill_daemon(console: Console) -> bool:
 
 
 def kill_stale_camera_holders(device: int, console: Console) -> None:
-    """Kill any process holding /dev/video<device> (except ourselves)."""
+    """Kill any process holding /dev/video<device> (except ourselves).
+
+    Linux-only: uses `fuser`, which doesn't exist on macOS. Also irrelevant
+    in wireless mode — there is no local /dev/video* in that case.
+    """
+    if not is_linux():
+        return
     try:
         r = subprocess.run(
             ["fuser", f"/dev/video{device}"],

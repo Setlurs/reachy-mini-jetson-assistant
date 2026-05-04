@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""STT — faster-whisper, GPU-accelerated Whisper on Jetson."""
+"""STT — faster-whisper. CUDA on Jetson, CPU on macOS."""
 
 from typing import Dict, Any, Union
 import numpy as np
+
+from app.platform_utils import is_macos
 
 
 class STT:
@@ -29,6 +31,11 @@ class STT:
         beam_size: int = 1,
     ):
         self.model_name = model
+        # CTranslate2 has no Metal target on Apple Silicon, so silently
+        # rewrite the default cuda → cpu instead of failing the load and
+        # then falling back. compute_type=int8 works fine on CPU.
+        if is_macos() and device == "cuda":
+            device = "cpu"
         self.device = device
         self.compute_type = compute_type
         self.language = language

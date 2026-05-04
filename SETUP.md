@@ -1,6 +1,9 @@
 # Setup Guide
 
-Full installation instructions for the Reachy Mini Jetson Assistant.
+Full installation instructions. Two host platforms are supported — pick one:
+
+* **NVIDIA Jetson** (the original target). Continue with the sections below.
+* **macOS / Apple Silicon** — jump to [macOS Install](#macos--apple-silicon) at the bottom; the Jetson sections do not apply.
 
 ## Prerequisites
 
@@ -240,3 +243,77 @@ A previous instance is still running. Kill it: `lsof -ti :8090 | xargs kill -9`
 
 **Camera not found:**
 Check the device is available: `ls /dev/video*`. If another process holds it: `fuser -k /dev/video0`
+
+---
+
+## Connection Modes
+
+| Mode | Robot | Host | Camera / Mic / Speaker |
+|------|-------|------|------------------------|
+| Wired (default for Reachy Mini Lite) | Reachy Mini Lite | Jetson | Local USB (V4L2 / ALSA) |
+| Wireless (default everywhere else) | Reachy Mini Wireless (CM4) | Jetson **or** macOS | Robot streams via `robot.media` over WebRTC |
+| Wireless on-device | Reachy Mini Wireless (CM4) | The robot's CM4 itself | `robot.media` via GStreamer |
+
+The default in `config/settings.yaml` is wireless against a remote daemon — i.e. the assistant runs on a Jetson or Mac, the daemon (`reachy-mini-daemon` ≥ 1.7.0) runs on the robot. To use a wired Reachy Mini Lite instead, set:
+
+```yaml
+reachy:
+  wireless: false
+  spawn_daemon: true
+  media_backend: "no_media"
+```
+
+Or pass `--no-wireless` on the command line.
+
+---
+
+## macOS / Apple Silicon
+
+Tested on macOS 14+ with Apple Silicon. macOS only supports the **wireless** connection mode — the assistant connects to the daemon running on the robot.
+
+### Install
+
+```bash
+git clone https://github.com/Setlurs/reachy-mini-jetson-assistant
+cd reachy-mini-jetson-assistant
+./install_mac.sh
+```
+
+`install_mac.sh` creates a `venv/`, installs `requirements.txt`, then folds in the macOS dependency workarounds for the Reachy Mini SDK:
+
+* `reachy_mini` is installed `--no-deps` because it pins `libusb_package>=1.0.26.3` which doesn't exist on PyPI (only matters for wired mode anyway).
+* `gst-signalling`, `reachy_mini_dances_library`, and `reachy_mini_toolbox` are installed `--no-deps` to bypass overly-strict version caps and avoid scipy source builds.
+* The Homebrew Python framework is symlinked into the python.org layout so `gstreamer-bundle`'s `libgstpython.dylib` can find it (sudo prompt during install).
+
+These workarounds came from `saket424/reachy_mini_conversation_app_local`'s `install_mac_wireless.sh`. Re-run `install_mac.sh` after a Python upgrade to refresh the symlink.
+
+### LLM / VLM server (Metal)
+
+```bash
+brew install llama.cpp
+./run_llama_cpp_mac.sh Kbenkhaled/Cosmos-Reason2-2B-GGUF:Q4_K_M
+```
+
+The OpenAI-compatible HTTP surface is the same as the Jetson Docker variant, so `app/llm.py` does not branch.
+
+### What's different vs Jetson
+
+| Thing | Jetson | macOS |
+|-------|--------|-------|
+| LLM server | `run_llama_cpp.sh` (Docker, CUDA) | `run_llama_cpp_mac.sh` (native, Metal) |
+| STT (faster-whisper) | CUDA via CTranslate2 | CPU (CTranslate2 has no Metal target) |
+| TTS (Kokoro ONNX) | CUDA Execution Provider | CoreML Execution Provider |
+| Mic / camera / speaker | USB ALSA + V4L2 (wired) **or** `robot.media` (wireless) | `robot.media` (wireless only) |
+| GPU stats in web UI | nvidia-smi / sysfs | Skipped (Apple GPU not exposed without root) |
+| Platform name | "Jetson Orin Nano …" | "MacBook Pro (Apple M3 …)" via `sysctl` |
+
+### macOS troubleshooting
+
+**`Library not loaded: /Library/Frameworks/Python.framework/...`**
+Re-run `./install_mac.sh`. The script creates a symlink from that path to the Homebrew Python framework, which `gstreamer-bundle`'s `libgstpython.dylib` was built against.
+
+**WebRTC stays "negotiating" forever / no camera frames**
+Verify the `reachy-mini-daemon` is reachable on the network (the Mac and the robot need to be on the same LAN, or you need port-forwarding). Check the daemon logs on the CM4.
+
+**Kokoro TTS falls back to CPU**
+That's fine on Apple Silicon, but you can verify CoreML by checking the worker's stderr — it logs the active ONNX provider on startup.

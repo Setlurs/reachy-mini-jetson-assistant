@@ -6,16 +6,21 @@
   <a href="https://developer.nvidia.com/embedded/jetson-orin-nano"><img src="docs/images/jetson-family.png" alt="NVIDIA Jetson" height="180"/></a>
 </p>
 
-A low-latency, fully on-device voice and vision assistant for [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) powered by NVIDIA Jetson. Everything runs locally with GPU acceleration — no cloud, no API keys, no internet required at runtime.
+A low-latency, fully on-device voice and vision assistant for [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/). Everything runs locally with GPU acceleration — no cloud, no API keys, no internet required at runtime.
 
 Two robot connection modes are supported:
 
 * **Wireless** (default) — Reachy Mini Wireless (CM4) over WebRTC. Camera, mic, and speaker stream through `robot.media` from the SDK. Requires the `reachy-mini-daemon` (≥ 1.7.0) running on the robot.
 * **Wired** — Reachy Mini Lite tethered over USB. Local camera (V4L2) and audio (ALSA / PulseAudio).
 
-> **Current target:** Jetson Orin Nano 8GB (JetPack 6.x, Python 3.10)
->
-> AGX Orin and Thor support is planned — see [Roadmap](#roadmap).
+Two host platforms are supported:
+
+* **NVIDIA Jetson** (Orin Nano 8GB tested) — JetPack 6.x, Python 3.10, CUDA via Docker.
+* **macOS / Apple Silicon** — Metal-accelerated `llama.cpp`, Apple CoreML for Kokoro TTS.
+
+The two axes are orthogonal: a Jetson can run wireless against a Reachy Mini Wireless, and a Mac can drive the same robot the same way.
+
+> AGX Orin and Thor Jetson support is planned — see [Roadmap](#roadmap).
 
 ## What It Does
 
@@ -61,15 +66,24 @@ Speak to Reachy Mini and it responds using a vision-language model that sees thr
 
 ## Prerequisites
 
-- **NVIDIA Jetson Orin Nano** (8GB) with JetPack 6.x, Python 3.10, Docker + NVIDIA runtime
-- **NVMe SSD** recommended for swap and model storage
-- One of:
-  - **[Reachy Mini Wireless (CM4)](https://huggingface.co/docs/reachy_mini/)** — wireless WebRTC (default). Daemon ≥ 1.7.0 must be running on the robot.
-  - **[Reachy Mini Lite](https://huggingface.co/docs/reachy_mini/platforms/reachy_mini_lite/get_started)** — wired USB. Pass `--no-wireless` (or set `reachy.wireless: false`).
+Pick a host:
+
+| Host | Notes |
+|------|-------|
+| **NVIDIA Jetson Orin Nano (8GB)** | JetPack 6.x, Python 3.10, Docker + NVIDIA runtime, NVMe SSD recommended |
+| **MacBook Pro / Apple Silicon** | macOS 14+, Python 3.10–3.14, Homebrew (for `llama.cpp`) |
+
+Pick a robot:
+
+| Robot | Mode |
+|-------|------|
+| **[Reachy Mini Wireless (CM4)](https://huggingface.co/docs/reachy_mini/)** | Wireless WebRTC (default). Daemon ≥ 1.7.0 must be running on the robot. |
+| **[Reachy Mini Lite](https://huggingface.co/docs/reachy_mini/platforms/reachy_mini_lite/get_started)** | Wired USB. Pass `--no-wireless` (or set `reachy.wireless: false`). |
 
 ## Setup
 
-See **[SETUP.md](SETUP.md)** for the full installation guide — hardware setup, dependencies, Python packages, model downloads, and troubleshooting.
+* **Jetson** — see **[SETUP.md](SETUP.md)** for the full guide (CUDA, Docker, ONNX Runtime, CTranslate2 build).
+* **macOS** — run `./install_mac.sh` to set up the venv with the Reachy Mini SDK + GStreamer/WebRTC stack (folds in the dependency workarounds documented in [`install_mac.sh`](install_mac.sh)).
 
 ## Usage
 
@@ -80,7 +94,12 @@ This is the recommended mode — VLM + camera + voice + browser dashboard.
 **Terminal 1** — Start the VLM server:
 
 ```bash
+# Jetson (CUDA via Docker):
 NP=1 ./run_llama_cpp.sh Kbenkhaled/Cosmos-Reason2-2B-GGUF:Q4_K_M
+
+# macOS (Metal, native llama.cpp):
+brew install llama.cpp
+./run_llama_cpp_mac.sh Kbenkhaled/Cosmos-Reason2-2B-GGUF:Q4_K_M
 ```
 
 Wait until you see `llama server listening at http://0.0.0.0:8080`.
@@ -93,7 +112,7 @@ python3 run_web_vision_chat.py                # default: wireless robot
 python3 run_web_vision_chat.py --no-wireless  # wired Reachy Mini Lite
 ```
 
-Open `http://<jetson-ip>:8090` in a browser for the live UI. The robot's microphone, camera, and speakers are streamed through `robot.media` (WebRTC) in wireless mode; through the local USB device in wired mode.
+Open `http://<host-ip>:8090` in a browser for the live UI. The robot's microphone, camera, and speakers are streamed through `robot.media` (WebRTC) in wireless mode; through the local USB device in wired mode.
 
 Press **Ctrl+C** once to exit cleanly (robot will go to sleep position).
 
