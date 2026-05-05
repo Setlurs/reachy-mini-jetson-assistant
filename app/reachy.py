@@ -108,25 +108,27 @@ def kill_stale_camera_holders(device: int, console: Console) -> None:
         pass
 
 
-def _resolve_connection_mode(rcfg) -> Tuple[str, bool, bool]:
+def _resolve_connection_mode(rcfg) -> Tuple[str, str, bool]:
     """Translate (wireless, on_device, media_backend) into ReachyMini kwargs.
 
-    Returns (media_backend, localhost_only, spawn_daemon).
+    Returns (media_backend, connection_mode, spawn_daemon) where
+    connection_mode is one of "auto" / "localhost_only" / "network" — the
+    SDK 1.7+ replacement for the deprecated `localhost_only` bool.
     """
     wireless = bool(getattr(rcfg, "wireless", False))
     on_device = bool(getattr(rcfg, "on_device", False))
 
     if not wireless:
         # Wired USB (Reachy Mini Lite) — keep existing behavior.
-        return rcfg.media_backend, True, rcfg.spawn_daemon
+        return rcfg.media_backend, "localhost_only", rcfg.spawn_daemon
 
     if on_device:
         # Wireless robot, daemon co-located with the app (e.g. running on
         # the CM4 itself). GStreamer talks to the local pipeline directly.
-        return "gstreamer", True, rcfg.spawn_daemon
+        return "gstreamer", "localhost_only", rcfg.spawn_daemon
 
     # Fully remote — daemon runs on the robot, we talk over the network.
-    return "webrtc", False, False
+    return "webrtc", "network", False
 
 
 def is_wireless(config) -> bool:
@@ -238,7 +240,7 @@ def connect(config, console: Console) -> Optional["ReachyMini"]:
         return None
 
     rcfg = config.reachy
-    media_backend, localhost_only, spawn_daemon = _resolve_connection_mode(rcfg)
+    media_backend, connection_mode, spawn_daemon = _resolve_connection_mode(rcfg)
     daemon_already_running = is_daemon_running()
 
     if rcfg.wireless and rcfg.on_device:
@@ -261,17 +263,13 @@ def connect(config, console: Console) -> Optional["ReachyMini"]:
                     kill_daemon(console)
                 console.print("  Retrying connection (fresh daemon)...")
 
-            kwargs = dict(
+            reachy = ReachyMini(
                 spawn_daemon=spawn_daemon,
                 use_sim=False,
                 timeout=rcfg.timeout,
                 media_backend=media_backend,
+                connection_mode=connection_mode,
             )
-            if not localhost_only:
-                # Allow SDK to discover the daemon over the network.
-                kwargs["localhost_only"] = False
-
-            reachy = ReachyMini(**kwargs)
 
             reachy.enable_motors()
             if rcfg.wake_on_start:
