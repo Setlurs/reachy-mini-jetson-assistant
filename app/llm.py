@@ -168,6 +168,8 @@ class LLM:
                     "options": {"num_predict": max_tokens, "temperature": temperature},
                 }) as r:
                     if r.status_code != 200:
+                        err = r.read().decode(errors="replace")[:300]
+                        print(f"\n  [LLM error {r.status_code}] {err}")
                         yield ("", {})
                         return
                     for line in r.iter_lines():
