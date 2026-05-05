@@ -26,11 +26,55 @@ The two axes are orthogonal: a Jetson can run wireless against a Reachy Mini Wir
 
 Speak to Reachy Mini and it responds using a vision-language model that sees through its camera. The robot moves its head and antennas while it talks, and you can watch everything live through a browser-based UI.
 
+In **wireless mode** (the default, with a Reachy Mini Wireless CM4) the robot's camera, microphones, and speakers are bridged to the host over WebRTC. The on-robot daemon encodes media into **Opus** (audio) and **VP8** (video) inside RTP, then ships it over UDP after exchanging an SDP offer/answer over HTTP. The host's `reachy_mini` SDK runs the matching GStreamer decode pipeline and exposes raw frames and audio samples to our app. Kokoro TTS output is encoded back to Opus and pushed over the same WebRTC peer connection so the robot's speakers play it locally:
+
 ```
-[Mic] → [Silero VAD] → [faster-whisper STT] ──┐
-[USB Camera] → [Frame Ring Buffer] ────────────┼→ [VLM stream] → [TTS stream] → [Speaker + Robot]
-                                               └→ [Web UI via WebSocket]
++----------------------------------------------------------------------+
+|  Reachy Mini Wireless (CM4)  --  reachy-mini-daemon >= 1.7           |
+|                                                                      |
+|   [Mic array] -> [ReSpeaker DSP: AGC / AEC / beamforming]            |
+|   [Camera]                                                           |
+|   [Speakers] <-+                                                     |
+|        |       |                                                     |
+|        v       |                                                     |
+|   GStreamer encode/decode (RTP):                                     |
+|      tx:  PCM 48k -> Opus  /  camera -> VP8                          |
+|      rx:  Opus     -> PCM 48k         (TTS playback)                 |
++--------+-----------------------------------+-------------------------+
+         |                                   ^
+         |  WebRTC over LAN / Wi-Fi          |
+         |   - signaling: HTTP SDP offer/answer via gst-signalling
+         |                client -> daemon :8000
+         |   - media:     ICE / DTLS / SRTP over UDP (P2P)
+         v                                   |
++--------v-----------------------------------+-------------------------+
+|  Host  (Mac or Jetson)                                               |
+|                                                                      |
+|  reachy_mini SDK -- webrtc_client_gstreamer                          |
+|    GStreamer media proxy:                                            |
+|       audio rx: Opus  -> float32     (appsink)                       |
+|       audio tx: float32 -> Opus      (appsrc)                        |
+|       video rx: VP8   -> BGR uint8   (appsink)                       |
+|        |                                  ^                          |
+|        | robot.media.get_frame()          | robot.media.             |
+|        | robot.media.get_audio_sample()   | push_audio_sample()      |
+|        v                                  |                          |
+|  +----------------------------------------+------------------------+ |
+|  | reachy-mini-jetson-assistant pipeline                           | |
+|  |                                                                 | |
+|  |  RobotMicRecorder -> Silero VAD -> faster-whisper STT --+       | |
+|  |  RobotCamera (3 fps ring buffer) -----------------------+       | |
+|  |                                                         v       | |
+|  |     [VLM stream]  (Ollama / llama.cpp, OpenAI-compatible)       | |
+|  |              |                                                  | |
+|  |              +-> Kokoro TTS stream -> play_audio(robot=...) ----+ |
+|  |              |                                                  | |
+|  |              +-> Web UI / WebSocket :8090  (operator's browser) | |
+|  +-----------------------------------------------------------------+ |
++----------------------------------------------------------------------+
 ```
+
+In **wired mode** (Reachy Mini Lite over USB) the WebRTC + GStreamer media-proxy layers are absent: a local USB camera goes through OpenCV/V4L2 and the local USB audio device goes through PulseAudio/ALSA, but everything from VAD onwards is identical. The Web UI WebSocket on `:8090` is a separate channel from the operator's browser to the assistant — unrelated to the WebRTC link to the robot.
 
 ## Demo
 
