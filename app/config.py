@@ -50,8 +50,15 @@ class TTSConfig:
     voice: str = "af_sarah"
     speed: float = 1.0
     lang: str = "en-us"
+    # Word-count thresholds (legacy, retained for backwards compat with any
+    # outside tooling that still reads them; the streaming chunker uses the
+    # _chars values below now).
     first_chunk_words: int = 3
     max_chunk_words: int = 8
+    # Waterfall chunker character targets — first chunk smaller for fast
+    # time-to-first-audio, subsequent chunks aim for full sentences.
+    first_chunk_chars: int = 60
+    max_chunk_chars: int = 150
 
 
 @dataclass

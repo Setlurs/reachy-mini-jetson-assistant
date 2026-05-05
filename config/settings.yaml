@@ -74,8 +74,16 @@ tts:
   voice: "af_sarah"                   # kokoro voices: af_sarah, af_bella, am_adam, bf_emma, bm_george, etc.
   speed: 1.0
   lang: "en-us"                       # kokoro language code
-  first_chunk_words: 3                # words before first TTS chunk is sent
-  max_chunk_words: 8                  # max words per TTS chunk
+  # Streaming chunker: waterfall splitter buffers tokens and emits chunks
+  # on natural breaks (sentence > clause > phrase > space). first_chunk
+  # is smaller for fast time-to-first-audio; later chunks aim for full
+  # sentences so prosody stays natural.
+  first_chunk_chars: 60
+  max_chunk_chars: 150
+  # Legacy word-count thresholds (kept for backwards compat; the chunker
+  # uses the _chars values above).
+  first_chunk_words: 3
+  max_chunk_words: 8
 
 audio:
   sample_rate: 16000

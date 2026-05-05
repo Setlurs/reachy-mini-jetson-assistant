@@ -20,15 +20,172 @@
 # synthesis runs in a separate subprocess (app/tts_worker.py) that
 # communicates via JSON lines over stdin/stdout.
 
+import re
 import sys
 import json
 import wave
 import base64
 import subprocess
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 import numpy as np
+
+
+# ── Text cleaning + waterfall chunking ───────────────────────────
+#
+# Two helpers ported from reachy_mini_conversation_app_local — they're
+# what makes Kokoro sound polished there. The cleaner strips markdown
+# noise the LLM occasionally emits (asterisks, bracketed stage
+# directions, etc.); the chunker buffers token chunks and only emits
+# them on natural punctuation boundaries instead of arbitrary word
+# counts. Both are used by app/pipeline.py and run_web_vision_chat.py.
+
+
+try:
+    from num2words import num2words as _num2words  # type: ignore
+    _HAS_NUM2WORDS = True
+except ImportError:
+    _HAS_NUM2WORDS = False
+
+# Numbers Kokoro should hear as words: 32,575 / 100 / 18.4 (matches comma
+# groupings or plain int/decimal). The lookarounds guard against digits
+# embedded in alphanumeric identifiers like "PM2.5" or "PM10" — those are
+# names, not quantities, and should be left alone for the model to spell.
+# Years like 2026 still match — fine for our use case ("two thousand
+# twenty six" reads cleanly).
+# Lookbehind rejects letters, digits, and '.' so identifiers like
+# 'PM2.5', 'PM10', or 'v1.0' aren't mangled — only standalone numbers
+# preceded by whitespace or punctuation get vocalized. Lookahead rejects
+# trailing letters so '32K' or '5GB' stay alphanumeric.
+_NUMBER_RE = re.compile(
+    r"(?<![A-Za-z.\d])"
+    r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?![A-Za-z])"
+)
+
+
+def _spoken_number(match: "re.Match[str]") -> str:
+    raw = match.group()
+    if not _HAS_NUM2WORDS:
+        return raw
+    cleaned = raw.replace(",", "")
+    try:
+        n = float(cleaned) if "." in cleaned else int(cleaned)
+        out = _num2words(n)
+    except Exception:
+        return raw
+    # Smooth num2words output: drop hyphens, commas, and the "and"
+    # connector so Kokoro sees a flat word sequence.
+    return out.replace("-", " ").replace(",", "").replace(" and ", " ")
+
+
+def clean_text_for_speech(text: str) -> str:
+    """Strip markdown / bracketed asides and turn digit groups into words.
+
+    Goals:
+      - LLM occasionally emits markdown (asterisks, brackets, headers) —
+        strip so Kokoro doesn't read them literally.
+      - Numbers like '32,575' should be vocalized as
+        'thirty two thousand five hundred seventy five', not stumbled
+        over digit-by-digit.
+    """
+    text = re.sub(r"\([^)]*\)", "", text)        # (parentheticals)
+    text = re.sub(r"\[[^\]]*\]", "", text)       # [stage directions]
+    text = re.sub(r"\{[^}]*\}", "", text)        # {tags}
+    text = re.sub(r"\*+", "", text)              # *emphasis* / **bold**
+    text = re.sub(r"_+", "", text)               # _underscores_
+    text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)  # markdown headers
+    text = _NUMBER_RE.sub(_spoken_number, text)  # 32,575 → thirty two thousand…
+    text = re.sub(r"\s+", " ", text)             # collapse whitespace
+    return text.strip()
+
+
+# Waterfall break points, strongest natural pause first.
+_CHUNK_BREAKS: List[re.Pattern] = [
+    re.compile(r'([.!?…]+["\'\)]?\s+)'),  # sentence end (with trailing close-quote/paren)
+    re.compile(r"([:;]\s+)"),              # clause separator
+    re.compile(r"([,—]\s+)"),              # phrase separator
+    re.compile(r"(\s+)"),                  # last-resort: any whitespace
+]
+
+
+def _find_break(buf: str, target: int, slack: int = 20) -> Optional[int]:
+    """Return the best break index in buf around `target` chars, or None.
+
+    Searches up to `target + slack` so a sentence end *just past* the
+    target can still anchor the chunk. Falls through the waterfall:
+    sentence > clause > phrase > whitespace, taking the latest match in
+    each priority that fits within the window.
+    """
+    window = buf[: target + slack]
+    for pattern in _CHUNK_BREAKS:
+        matches = list(pattern.finditer(window))
+        if not matches:
+            continue
+        # Prefer the latest match within the soft target.
+        for m in reversed(matches):
+            if m.end() <= target + slack and m.end() > 20:
+                return m.end()
+    return None
+
+
+class StreamingChunker:
+    """Buffer tokens from the LLM and emit TTS-ready chunks on natural breaks.
+
+    The first chunk uses a smaller char target so the robot starts
+    speaking quickly; subsequent chunks aim for full sentences (~max_chars)
+    to keep prosody coherent. Mirrors the reference project's waterfall
+    splitter, adapted for incremental token feed instead of a finished
+    string.
+    """
+
+    def __init__(self, first_chunk_chars: int = 60, max_chunk_chars: int = 150):
+        self.first_chunk_chars = max(20, first_chunk_chars)
+        self.max_chunk_chars = max(self.first_chunk_chars, max_chunk_chars)
+        self._buf = ""
+        self._first_emitted = False
+
+    def feed(self, token: str) -> List[str]:
+        """Append a token; return any chunks ready for synthesis."""
+        if not token:
+            return []
+        self._buf += token
+        out: List[str] = []
+        while True:
+            chunk = self._try_extract()
+            if chunk is None:
+                break
+            out.append(chunk)
+        return out
+
+    def flush(self) -> Optional[str]:
+        """Return whatever's left in the buffer (call at end of stream)."""
+        rest = self._buf.strip()
+        self._buf = ""
+        if rest:
+            self._first_emitted = True
+            return rest
+        return None
+
+    def _try_extract(self) -> Optional[str]:
+        target = self.first_chunk_chars if not self._first_emitted else self.max_chunk_chars
+        if len(self._buf) < target:
+            return None
+        idx = _find_break(self._buf, target)
+        if idx is None:
+            # No natural break in the window — let more text accumulate
+            # rather than slice mid-word. Bail out at hard ceiling.
+            if len(self._buf) < target * 2:
+                return None
+            # Hard cap reached: split at the last space we can find.
+            sp = self._buf.rfind(" ", 0, target * 2)
+            idx = sp if sp > 20 else target * 2
+        chunk = self._buf[:idx].strip()
+        self._buf = self._buf[idx:]
+        if chunk:
+            self._first_emitted = True
+        return chunk or None
 
 
 VOICES_DIR = Path(__file__).resolve().parent.parent / "voices"

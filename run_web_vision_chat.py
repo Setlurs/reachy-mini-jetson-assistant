@@ -371,8 +371,10 @@ def main():
 
     n_frames = config.vision.frames
     n_fewshot = len(vision_few_shot) // 2
-    first_chunk_words = config.tts.first_chunk_words
-    max_chunk_words = config.tts.max_chunk_words
+    first_chunk_chars = config.tts.first_chunk_chars
+    max_chunk_chars = config.tts.max_chunk_chars
+
+    from app.tts import StreamingChunker, clean_text_for_speech
 
     console.print(
         f"\n[green bold]Ready — speak anytime! "
@@ -467,10 +469,17 @@ def main():
                 tts_thread.start()
 
             full_resp = ""
-            tts_buf = ""
-            first_tts_sent = False
             t_llm = time.perf_counter()
             ttft = None
+            chunker = StreamingChunker(
+                first_chunk_chars=first_chunk_chars,
+                max_chunk_chars=max_chunk_chars,
+            ) if tts_q is not None else None
+
+            def _emit_tts(s: str):
+                cleaned = clean_text_for_speech(s)
+                if cleaned and tts_q is not None:
+                    tts_q.put(cleaned)
 
             if config.llm.tools_enabled and tool_specs:
                 # Tool path: non-streaming first call (with tools), dispatch
@@ -505,21 +514,17 @@ def main():
 
                     broadcaster.send({"type": "token", "text": content})
 
-                    if tts_q is not None:
-                        tts_buf += content
-                        words = len(tts_buf.split())
-                        limit = first_chunk_words if not first_tts_sent else max_chunk_words
-                        hit_break = any(c in content for c in TTS_BREAKS) and words >= 2
-                        if hit_break or words >= limit:
-                            tts_q.put(tts_buf.strip())
-                            tts_buf = ""
-                            first_tts_sent = True
+                    if chunker is not None:
+                        for ready in chunker.feed(content):
+                            _emit_tts(ready)
 
             dt_llm = time.perf_counter() - t_llm
 
             if tts_q is not None:
-                if tts_buf.strip():
-                    tts_q.put(tts_buf.strip())
+                if chunker is not None:
+                    tail = chunker.flush()
+                    if tail:
+                        _emit_tts(tail)
                 tts_q.put(None)
                 tts_thread.join()
 

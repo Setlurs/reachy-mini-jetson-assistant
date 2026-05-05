@@ -618,27 +618,42 @@ def stream_and_speak(
     pa_sink: Optional[str] = None,
     images_b64: Optional[list[str]] = None,
     few_shot: Optional[list[dict]] = None,
-    first_chunk_words: int = 3,
-    max_chunk_words: int = 8,
+    first_chunk_chars: int = 60,
+    max_chunk_chars: int = 150,
 ) -> tuple[str, float, Optional[float]]:
     """Stream LLM response while chunking text to TTS for real-time playback.
 
+    Uses the waterfall StreamingChunker so chunks fall on sentence/clause
+    boundaries instead of arbitrary word counts — that's what gives Kokoro
+    natural prosody. Each chunk is also cleaned of markdown noise before
+    being queued to the TTS subprocess.
+
     Returns (full_response, elapsed_seconds, time_to_first_token).
     """
+    from app.tts import StreamingChunker, clean_text_for_speech
+
     tts_q = None
     tts_thread = None
+    chunker: Optional[StreamingChunker] = None
     if tts_obj:
         tts_q = queue.Queue()
         tts_thread = threading.Thread(
             target=tts_player, args=(tts_obj, tts_q, pa_sink), daemon=True,
         )
         tts_thread.start()
+        chunker = StreamingChunker(
+            first_chunk_chars=first_chunk_chars,
+            max_chunk_chars=max_chunk_chars,
+        )
 
     full_resp = ""
-    tts_buf = ""
-    first_tts_sent = False
     t_llm = time.perf_counter()
     ttft = None
+
+    def _emit(text: str) -> None:
+        cleaned = clean_text_for_speech(text)
+        if cleaned and tts_q is not None:
+            tts_q.put(cleaned)
 
     for chunk_data in llm.generate_stream(
         prompt=prompt, system_prompt=system_prompt,
@@ -651,22 +666,17 @@ def stream_and_speak(
             sys.stdout.write(content)
             sys.stdout.flush()
             full_resp += content
-
-            if tts_q is not None:
-                tts_buf += content
-                words = len(tts_buf.split())
-                limit = first_chunk_words if not first_tts_sent else max_chunk_words
-                hit_break = any(c in content for c in TTS_BREAKS) and words >= 2
-                if hit_break or words >= limit:
-                    tts_q.put(tts_buf.strip())
-                    tts_buf = ""
-                    first_tts_sent = True
+            if chunker is not None:
+                for ready in chunker.feed(content):
+                    _emit(ready)
 
     dt_llm = time.perf_counter() - t_llm
 
     if tts_q is not None:
-        if tts_buf.strip():
-            tts_q.put(tts_buf.strip())
+        if chunker is not None:
+            tail = chunker.flush()
+            if tail:
+                _emit(tail)
         tts_q.put(None)
         tts_thread.join()
 

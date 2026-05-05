@@ -38,6 +38,10 @@ uvicorn>=0.24.0
 # Tool calling — DuckDuckGo for web_search (other tools use stdlib urllib)
 ddgs>=6.0.0
 
+# TTS polish — convert numeric tokens (e.g. "32,575") to spoken words
+# so Kokoro doesn't stumble over digit-by-digit pronunciation.
+num2words>=0.5.13
+
 # Reachy Mini SDK (robot control)
 # Installed separately: pip install reachy-mini
 
