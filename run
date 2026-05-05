@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Convenience launcher — activates the venv and starts the web UI in
+# the default (wireless) mode against the Reachy Mini Wireless daemon.
+#
+# Edit if you need flags: --no-wireless for a wired Reachy Mini Lite,
+# --on-device when running this on the robot's own CM4.
+source venv/bin/activate && python3 run_web_vision_chat.py
+# http://localhost:8090/
