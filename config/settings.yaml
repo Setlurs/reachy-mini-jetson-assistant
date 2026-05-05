@@ -16,10 +16,19 @@
 # Reachy Mini Jetson Assistant — Configuration
 
 llm:
-  model: ""                           # empty = auto-detect from server
-  base_url: "http://localhost:8080"
-  backend: "openai"                   # "openai" (llama.cpp) or "ollama"
-  max_tokens: 128
+  # Ollama exposes both its native /api/chat and an OpenAI-compatible
+  # /v1/chat/completions. Use backend: "openai" against the bare
+  # http://localhost:11434 base_url (the client appends /v1/... paths
+  # itself); this is the only path that accepts OpenAI-style image_url
+  # content for vision chat. Native Ollama /api/chat needs a separate
+  # `images:` field which our llm.py does not produce.
+  backend: "openai"
+  base_url: "http://localhost:11434"
+  model: "gemma4:e2b"
+  #model: ""                           # empty = auto-detect from server
+  #base_url: "http://localhost:8080"
+  #backend: "openai"                   # "openai" (llama.cpp) or "ollama"
+  max_tokens: 32000
   temperature: 0.7
   timeout: 120.0
   system_prompt: |
