@@ -93,6 +93,8 @@ def _stats_broadcast_thread(
                 "cpu": round(s.cpu_percent, 1),
                 "ram_used": round(s.ram_used_mb / 1024, 1),
                 "ram_total": round(s.ram_total_mb / 1024, 1),
+                "disk_used": round(s.disk_used_gb, 1),
+                "disk_total": round(s.disk_total_gb, 1),
                 "models": models,
                 "clients": broadcaster.client_count,
             }

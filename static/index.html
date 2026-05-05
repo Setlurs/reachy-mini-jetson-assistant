@@ -296,10 +296,16 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
     <span class="stat-val" id="gpuVal">--%</span>
   </div>
   <div class="stat-sep" id="gpuSep" style="display:none"></div>
-  <div class="stat">
+  <div class="stat" title="Memory currently in use, including macOS file-system cache">
     <span class="stat-label">RAM</span>
     <div class="stat-bar"><div class="stat-bar-fill green" id="ramBar" style="width:0%"></div></div>
     <span class="stat-val" id="ramVal">--</span>
+  </div>
+  <div class="stat-sep"></div>
+  <div class="stat" title="Root filesystem usage">
+    <span class="stat-label">Disk</span>
+    <div class="stat-bar"><div class="stat-bar-fill green" id="diskBar" style="width:0%"></div></div>
+    <span class="stat-val" id="diskVal">--</span>
   </div>
   <div class="stat-sep"></div>
   <div class="stat">
@@ -434,6 +440,12 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
     $('ramBar').style.width = ramPct.toFixed(0) + '%';
     barColor($('ramBar'), ramPct);
     $('ramVal').textContent = msg.ram_used.toFixed(1) + ' / ' + msg.ram_total.toFixed(1) + ' GB';
+    if(msg.disk_total){
+      const diskPct = msg.disk_used / msg.disk_total * 100;
+      $('diskBar').style.width = diskPct.toFixed(0) + '%';
+      barColor($('diskBar'), diskPct);
+      $('diskVal').textContent = msg.disk_used.toFixed(0) + ' / ' + msg.disk_total.toFixed(0) + ' GB';
+    }
     if(msg.gpu != null){
       $('gpuStat').style.display = '';
       $('gpuSep').style.display = '';

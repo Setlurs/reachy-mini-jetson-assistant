@@ -29,13 +29,32 @@ class SystemStats:
     ram_used_mb: float
     ram_total_mb: float
     ram_percent: float
+    # `available` is psutil's "memory that can be given to processes without
+    # swapping" — on macOS this excludes the file-system cache, so it tracks
+    # real headroom rather than the inflated `used` figure that includes
+    # reclaimable cache.
+    ram_available_mb: float = 0.0
+    disk_used_gb: float = 0.0
+    disk_total_gb: float = 0.0
+    disk_percent: float = 0.0
     gpu_percent: Optional[float] = None
 
 
 def get_system_stats() -> SystemStats:
     cpu = _cpu()
-    used, total, pct = _ram()
-    return SystemStats(cpu_percent=cpu, ram_used_mb=used, ram_total_mb=total, ram_percent=pct, gpu_percent=_gpu())
+    used, total, pct, avail = _ram()
+    d_used, d_total, d_pct = _disk()
+    return SystemStats(
+        cpu_percent=cpu,
+        ram_used_mb=used,
+        ram_total_mb=total,
+        ram_percent=pct,
+        ram_available_mb=avail,
+        disk_used_gb=d_used,
+        disk_total_gb=d_total,
+        disk_percent=d_pct,
+        gpu_percent=_gpu(),
+    )
 
 
 def format_stats(s: SystemStats) -> str:
@@ -59,11 +78,27 @@ def _cpu() -> float:
             return 0.0
 
 
-def _ram() -> tuple[float, float, float]:
+def _disk() -> tuple[float, float, float]:
+    """Root-filesystem usage in GB and a percent. Falls back to (0,0,0)
+    on platforms without psutil and without `shutil.disk_usage` access."""
+    try:
+        import shutil
+        u = shutil.disk_usage("/")
+        gb = 1024 ** 3
+        used_gb = u.used / gb
+        total_gb = u.total / gb
+        pct = (u.used / u.total * 100.0) if u.total else 0.0
+        return used_gb, total_gb, pct
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+
+def _ram() -> tuple[float, float, float, float]:
     try:
         import psutil
         m = psutil.virtual_memory()
-        return m.used / 1048576, m.total / 1048576, m.percent
+        avail = getattr(m, "available", m.total - m.used)
+        return m.used / 1048576, m.total / 1048576, m.percent, avail / 1048576
     except ImportError:
         try:
             info = {}
@@ -72,10 +107,11 @@ def _ram() -> tuple[float, float, float]:
                     k, v = line.split()[:2]
                     info[k.rstrip(":")] = int(v)
             total = info.get("MemTotal", 0) / 1024
-            used = total - info.get("MemAvailable", 0) / 1024
-            return used, total, (used / total * 100) if total else 0
+            avail = info.get("MemAvailable", 0) / 1024
+            used = total - avail
+            return used, total, (used / total * 100) if total else 0, avail
         except Exception:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
 
 
 _GPU_SYSFS_PATHS = [
