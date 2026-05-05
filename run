@@ -4,5 +4,13 @@
 #
 # Edit if you need flags: --no-wireless for a wired Reachy Mini Lite,
 # --on-device when running this on the robot's own CM4.
-source venv/bin/activate && python3 run_web_vision_chat.py
+#
+# OS_ACTIVITY_MODE=disable silences the "Context leak detected,
+# CoreAnalytics returned false" log spam emitted by macOS CoreML when
+# Kokoro TTS picks the CoreMLExecutionProvider. Harmless either way.
+# (The one-shot AVFFrameReceiver / AVFAudioReceiver objc duplication
+# warnings at startup are emitted before any env var can suppress them
+# — they're a known cv2 / PyAV libavdevice symbol clash, also harmless.)
+source venv/bin/activate && \
+    OS_ACTIVITY_MODE=disable python3 run_web_vision_chat.py
 # http://localhost:8090/
