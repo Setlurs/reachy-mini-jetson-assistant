@@ -143,6 +143,20 @@ class WebConfig:
     port: int = 8090
 
 
+@dataclass
+class HAConfig:
+    """Home Assistant integration via the ESPHome voice-satellite reference.
+
+    When enabled, run_web_vision_chat spawns reachy_mini_home_assistant as a
+    sidecar process. HA auto-discovers the satellite via mDNS (no token, no
+    URL config). Wireless mode only — wired Lite SKU has exclusive mic
+    semantics that this approach can't share.
+    """
+    enabled: bool = False
+    wake_model: str = "okay_nabu"
+    satellite_log_level: str = "info"
+
+
 _SECTIONS = [
     ("llm", "llm", LLMConfig),
     ("stt", "stt", STTConfig),
@@ -154,6 +168,7 @@ _SECTIONS = [
     ("emotion", "emotion", EmotionConfig),
     ("rag", "rag", RAGConfig),
     ("web", "web", WebConfig),
+    ("ha", "ha", HAConfig),
 ]
 
 
@@ -169,6 +184,7 @@ class Config:
     emotion: EmotionConfig = field(default_factory=EmotionConfig)
     rag: RAGConfig = field(default_factory=RAGConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    ha: HAConfig = field(default_factory=HAConfig)
 
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Config":

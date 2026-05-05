@@ -154,6 +154,17 @@ web:
   host: "0.0.0.0"
   port: 8090
 
+ha:
+  # Home Assistant integration — when true, spawn the
+  # reachy_mini_home_assistant ESPHome voice satellite as a sidecar
+  # process. HA auto-discovers via mDNS (no token, no URL needed).
+  # Wireless mode only — wired Lite SKU can't share the mic this way.
+  # Requires `pip install -e Reachy_Mini_For_Home_Assistant/` (or pip
+  # install reachy-mini-home-assistant) into the same venv first.
+  enabled: false
+  wake_model: "okay_nabu"             # passed through to the satellite
+  satellite_log_level: "info"         # debug | info | warning | error
+
 rag:
   enabled: true
   knowledge_dir: "./knowledge_base"

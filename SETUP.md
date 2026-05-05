@@ -317,3 +317,37 @@ Verify the `reachy-mini-daemon` is reachable on the network (the Mac and the rob
 
 **Kokoro TTS falls back to CPU**
 That's fine on Apple Silicon, but you can verify CoreML by checking the worker's stderr — it logs the active ONNX provider on startup.
+
+## Home Assistant integration (optional, wireless only)
+
+When `config/settings.yaml::ha.enabled` is `true`, `run_web_vision_chat.py` spawns the
+[reachy_mini_home_assistant](https://github.com/ha-china/Reachy_Mini_For_Home_Assistant)
+ESPHome voice satellite as a sidecar. Home Assistant auto-discovers the
+device via mDNS — no token or URL configuration is required on this side.
+
+### Bring-up
+
+1. Clone the satellite repo somewhere, then install it into the same venv:
+
+   ```bash
+   pip install -e /path/to/Reachy_Mini_For_Home_Assistant/
+   ```
+
+2. Flip the flag in `config/settings.yaml`:
+
+   ```yaml
+   ha:
+     enabled: true
+     wake_model: "okay_nabu"
+   ```
+
+3. Restart `./run`. The console prints `✓ HA satellite (wake: okay_nabu) — watch HA Settings → Devices & Services for auto-discovery`.
+
+4. In Home Assistant: **Settings → Devices & Services → Add Integration → ESPHome**. The Reachy Mini appears in the discovered list; adopt it.
+
+### Notes
+
+- Wireless mode only. The wired Lite SKU has an exclusive local mic and can't share with the satellite.
+- The satellite owns its own ReachyMini SDK instance. The Reachy Mini daemon's WebRTC media stream supports both subscribers (our LLM pipeline + the satellite) in parallel.
+- Both processes are reaped on Ctrl-C — no orphans, no stuck WebRTC sessions.
+- Your existing PTT path on `:8090` and tool calling are unchanged. The satellite handles only utterances that begin with its wake word.

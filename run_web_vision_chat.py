@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -55,6 +56,7 @@ from app.web import Broadcaster, start_web_server
 from app.tools import (
     ToolDependencies, dispatch_tool_call, get_tool_specs, get_tools_info,
 )
+from app.ha_satellite import HASatellite, is_satellite_installed
 from rich.console import Console
 from rich.panel import Panel
 
@@ -167,6 +169,7 @@ def main():
     llm = None
     tts = None
     silero_model = None
+    ha_satellite: Optional[HASatellite] = None
 
     # ── Cleanup handler ──────────────────────────────────────────
     _cleanup_done = threading.Event()
@@ -190,6 +193,15 @@ def main():
         if tts:
             try:
                 tts.unload()
+            except Exception:
+                pass
+        # Reap the HA satellite sidecar before the parent exits so its
+        # WebRTC session and ESPHome server are torn down cleanly. Without
+        # this the satellite would either be left as a zombie or get
+        # SIGHUP'd by the kernel without finishing its own cleanup.
+        if ha_satellite is not None:
+            try:
+                ha_satellite.stop()
             except Exception:
                 pass
         if reachy and config.reachy.sleep_on_exit:
@@ -296,6 +308,32 @@ def main():
         console.print("[red]Cannot start recording! Check mic.[/red]")
         cam.close()
         return
+
+    # ── HA voice-satellite sidecar (opt-in) ──────────────────────
+    # When config.ha.enabled, spawn the reachy_mini_home_assistant
+    # ESPHome satellite alongside our pipeline. HA auto-discovers via
+    # mDNS — no token, no URL config needed. The satellite owns its own
+    # ReachyMini SDK instance; in wireless mode the daemon's WebRTC
+    # stream supports both subscribers in parallel.
+    if config.ha.enabled:
+        if not is_satellite_installed():
+            console.print(
+                "  [yellow]⚠ HA satellite enabled but reachy_mini_home_assistant "
+                "is not installed. Run `pip install -e Reachy_Mini_For_Home_Assistant/` "
+                "into this venv, or set ha.enabled: false.[/yellow]"
+            )
+        else:
+            ha_satellite = HASatellite(
+                wake_model=config.ha.wake_model,
+                log_level=config.ha.satellite_log_level,
+            )
+            if ha_satellite.start():
+                console.print(
+                    f"  ✓ HA satellite (wake: {config.ha.wake_model}) — "
+                    "watch HA Settings → Devices & Services for auto-discovery"
+                )
+            else:
+                ha_satellite = None
 
     # ── Start web server + background threads ────────────────────
     web_thread = start_web_server(broadcaster, host=web_host, port=web_port)
