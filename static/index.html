@@ -21,6 +21,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reachy Mini Vision Chat</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -51,8 +55,20 @@ header{display:flex;align-items:center;justify-content:space-between;
 
 /* ── Main layout ─────────────────────────── */
 .main{display:flex;flex:1;overflow:hidden}
-.left{width:38%;min-width:300px;display:flex;flex-direction:column;gap:10px;padding:10px;overflow-y:auto;border-right:1px solid var(--border)}
-.right{flex:1;display:flex;flex-direction:column;padding:10px;overflow:hidden}
+.left{width:38%;min-width:300px;display:flex;flex-direction:column;gap:8px;padding:8px;overflow-y:auto;border-right:1px solid var(--border)}
+/* Two equal-width panels side-by-side, used to compact Models + Robot. */
+.row-2{display:flex;gap:8px}
+.row-2 > .panel{flex:1;min-width:0}
+.right{flex:1;display:flex;flex-direction:column;padding:10px;gap:10px;overflow:hidden}
+/* Conversation 2/3, map 1/3 — flex grows partition the right column */
+.right > .conv-panel{flex:2;min-height:0}
+.right > .map-panel{flex:1;min-height:0;display:flex;flex-direction:column}
+.map-wrap{flex:1;min-height:0;background:#0a0e14}
+.map-wrap .leaflet-container{width:100%;height:100%;background:#0a0e14}
+.map-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:.8rem;text-align:center;padding:12px}
+.map-values{display:flex;gap:8px;flex-wrap:wrap;padding:6px 12px;font-size:.7rem;color:var(--dim);border-top:1px solid var(--border)}
+.map-values .mv-pair{white-space:nowrap}
+.map-values .mv-pair b{color:var(--text);font-weight:500;margin-left:3px}
 
 /* ── Panels ──────────────────────────────── */
 .panel{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
@@ -60,8 +76,11 @@ header{display:flex;align-items:center;justify-content:space-between;
   display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)}
 
 /* Camera */
-.cam-panel{flex-shrink:0}
-.cam-wrap{position:relative;background:#000;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center}
+.cam-panel{flex-shrink:0;display:flex;flex-direction:column}
+/* Camera shares a row with Pipeline, so it's already half-width. Drop the
+   vh cap and let the aspect ratio dictate height — at 50% of the left
+   column it stays compact naturally. */
+.cam-wrap{position:relative;background:#000;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;flex:1}
 .cam-wrap img{width:100%;height:100%;object-fit:contain;display:block}
 .cam-placeholder{color:var(--dim);font-size:.9rem}
 .live-badge{font-size:.65rem;padding:2px 6px;border-radius:3px;font-weight:700;letter-spacing:.5px}
@@ -120,6 +139,28 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
 .stat-sep{width:1px;height:16px;background:var(--border)}
 .model-badge{font-size:.7rem;padding:2px 8px;border-radius:4px;background:var(--accent-dim);color:var(--accent)}
 
+/* Tools panel — read-only registry display */
+/* 3x3 grid so all 9 tools are visible without scrolling. Each tool
+   shows name + example utterance; the example wraps to a second line
+   if needed so the full sample is readable instead of being truncated.
+   The longer description (intended for the LLM) is still discoverable
+   as a hover tooltip via the title attribute. */
+.tools-list{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 10px;padding:4px 10px 6px;align-items:start}
+.tool-row{padding:1px 0;cursor:help;min-width:0}
+.tool-row .tool-name{color:var(--accent);font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.62rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15}
+.tool-row .tool-example{margin-top:0;color:var(--text);font-style:italic;font-size:.58rem;line-height:1.2;white-space:normal;overflow-wrap:break-word}
+.tools-empty{grid-column:1/-1;font-size:.7rem}
+.tool-row .tool-example::before{content:"\201C";color:var(--dim);font-style:normal}
+.tool-row .tool-example::after{content:"\201D";color:var(--dim);font-style:normal}
+.tools-empty{padding:8px 12px 12px;font-size:.75rem;color:var(--dim);font-style:italic}
+
+/* Tool-call inline event in conversation */
+.msg.tool-call{background:#1a1f2e;align-self:center;max-width:96%;font-size:.75rem;
+  border-left:3px solid var(--warn);padding:6px 10px}
+.msg.tool-call .tool-call-name{color:var(--warn);font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.msg.tool-call .tool-call-detail{color:var(--dim);margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:pre-wrap;word-break:break-all}
+
 /* ── Responsive ──────────────────────────── */
 @media(max-width:768px){
   .main{flex-direction:column}
@@ -142,56 +183,67 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
 <div class="main">
   <!-- Left column -->
   <div class="left">
-    <!-- Camera -->
-    <div class="panel cam-panel">
+    <!-- Camera + Pipeline — side-by-side to keep both above the fold -->
+    <div class="row-2">
+      <div class="panel cam-panel">
+        <div class="panel-hdr">
+          <span>Robot View</span>
+          <span class="live-badge off" id="liveBadge">LIVE</span>
+        </div>
+        <div class="cam-wrap">
+          <img id="camImg" src="" alt="" style="display:none">
+          <div class="cam-placeholder" id="camPlaceholder">Waiting for camera...</div>
+        </div>
+        <div class="cam-info" id="camInfo">No frames yet</div>
+      </div>
+
+      <div class="panel pipe-panel">
+        <div class="panel-hdr"><span>Pipeline</span></div>
+        <div class="pipe-stages" id="pipeStages">
+          <div class="stage active" data-stage="listening">&#127908; Listen</div>
+          <div class="stage" data-stage="transcribing">&#128221; STT</div>
+          <div class="stage" data-stage="thinking">&#129504; VLM</div>
+          <div class="stage" data-stage="speaking">&#128266; TTS</div>
+        </div>
+        <div class="pipe-status" id="pipeStatus">Muted</div>
+        <div class="ptt-wrap">
+          <button class="ptt-btn muted" id="pttBtn" title="Toggle microphone">
+            <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/><line id="micSlash" x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="2.5"/></svg>
+            <span id="pttLabel">Unmute</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Models + Robot — side-by-side to save vertical space -->
+    <div class="row-2">
+      <div class="panel robot-panel">
+        <div class="panel-hdr"><span>Models</span></div>
+        <div class="robot-grid" id="modelsGrid">
+          <span class="label">STT</span><span class="val" id="modelSTT">--</span>
+          <span class="label">VLM</span><span class="val" id="modelVLM">--</span>
+          <span class="label">TTS</span><span class="val" id="modelTTS">--</span>
+          <span class="label">VAD</span><span class="val" id="modelVAD">--</span>
+        </div>
+      </div>
+
+      <div class="panel robot-panel">
+        <div class="panel-hdr"><span>Robot</span></div>
+        <div class="robot-grid" id="robotGrid">
+          <span class="label">Status</span><span class="val" id="robotConn">--</span>
+          <span class="label">Motors</span><span class="val" id="robotMotors">--</span>
+          <span class="label">Head</span><span class="val" id="robotHead">--</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tools — read-only registry display -->
+    <div class="panel" id="toolsPanel" style="display:none">
       <div class="panel-hdr">
-        <span>Robot View</span>
-        <span class="live-badge off" id="liveBadge">LIVE</span>
+        <span>Tools</span>
+        <span style="font-size:.7rem;color:var(--dim)" id="toolsState">disabled</span>
       </div>
-      <div class="cam-wrap">
-        <img id="camImg" src="" alt="" style="display:none">
-        <div class="cam-placeholder" id="camPlaceholder">Waiting for camera...</div>
-      </div>
-      <div class="cam-info" id="camInfo">No frames yet</div>
-    </div>
-
-    <!-- Pipeline -->
-    <div class="panel pipe-panel">
-      <div class="panel-hdr"><span>Pipeline</span></div>
-      <div class="pipe-stages" id="pipeStages">
-        <div class="stage active" data-stage="listening">&#127908; Listen</div>
-        <div class="stage" data-stage="transcribing">&#128221; STT</div>
-        <div class="stage" data-stage="thinking">&#129504; VLM</div>
-        <div class="stage" data-stage="speaking">&#128266; TTS</div>
-      </div>
-      <div class="pipe-status" id="pipeStatus">Muted</div>
-      <div class="ptt-wrap">
-        <button class="ptt-btn muted" id="pttBtn" title="Toggle microphone">
-          <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/><line id="micSlash" x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="2.5"/></svg>
-          <span id="pttLabel">Unmute</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Models -->
-    <div class="panel robot-panel">
-      <div class="panel-hdr"><span>Models</span></div>
-      <div class="robot-grid" id="modelsGrid">
-        <span class="label">STT</span><span class="val" id="modelSTT">--</span>
-        <span class="label">VLM</span><span class="val" id="modelVLM">--</span>
-        <span class="label">TTS</span><span class="val" id="modelTTS">--</span>
-        <span class="label">VAD</span><span class="val" id="modelVAD">--</span>
-      </div>
-    </div>
-
-    <!-- Robot -->
-    <div class="panel robot-panel">
-      <div class="panel-hdr"><span>Robot</span></div>
-      <div class="robot-grid" id="robotGrid">
-        <span class="label">Status</span><span class="val" id="robotConn">--</span>
-        <span class="label">Motors</span><span class="val" id="robotMotors">--</span>
-        <span class="label">Head</span><span class="val" id="robotHead">--</span>
-      </div>
+      <div class="tools-list" id="toolsList"></div>
     </div>
 
     <!-- Config -->
@@ -201,7 +253,7 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
     </div>
   </div>
 
-  <!-- Right column -->
+  <!-- Right column: conversation (2/3) + map (1/3) -->
   <div class="right">
     <div class="panel conv-panel">
       <div class="panel-hdr">
@@ -214,6 +266,19 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
           <div style="font-size:.75rem;margin-top:8px;color:var(--dim)">The robot listens through its microphone and responds via VLM + TTS.</div>
         </div>
       </div>
+    </div>
+
+    <!-- Map panel — populated by tools that return location data
+         (air_quality, water_data, wildfire_activity). -->
+    <div class="panel map-panel">
+      <div class="panel-hdr">
+        <span id="mapTitle">Map</span>
+        <span style="font-size:.7rem;color:var(--dim)" id="mapHint">no location data yet</span>
+      </div>
+      <div class="map-wrap" id="mapWrap">
+        <div class="map-empty" id="mapEmpty">Ask about air quality, river data, or wildfires to see a map here.</div>
+      </div>
+      <div class="map-values" id="mapValues" style="display:none"></div>
     </div>
   </div>
 </div>
@@ -288,6 +353,8 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
         case 'robot':    onRobot(msg); break;
         case 'info':     onInfo(msg); break;
         case 'ptt_state': onPttState(msg); break;
+        case 'tool_call': onToolCall(msg); break;
+        case 'map_card': onMapCard(msg); break;
       }
     };
   }
@@ -395,6 +462,109 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
       $('headerPlatform').textContent = msg.platform;
     }
     if(msg.config) updateConfig(msg.config);
+    if(msg.tools) updateTools(msg.tools);
+  }
+
+  function updateTools(info){
+    const panel = $('toolsPanel');
+    const list = $('toolsList');
+    const state = $('toolsState');
+    list.innerHTML = '';
+    const enabled = !!info.enabled;
+    state.textContent = enabled ? `${(info.tools || []).length} available` : 'disabled';
+    state.style.color = enabled ? 'var(--accent)' : 'var(--dim)';
+    if(!enabled || !info.tools || !info.tools.length){
+      list.innerHTML = '<div class="tools-empty">Tool calling is disabled. Set llm.tools_enabled: true in settings.yaml.</div>';
+    } else {
+      for(const t of info.tools){
+        const row = document.createElement('div');
+        row.className = 'tool-row';
+        // Description is for the LLM to read; users only need name + example.
+        // Surface description as a hover tooltip so it stays discoverable.
+        if(t.description) row.title = t.description;
+        let html = `<div class="tool-name">${esc(t.name)}</div>`;
+        if(t.example){
+          html += `<div class="tool-example">${esc(t.example)}</div>`;
+        }
+        row.innerHTML = html;
+        list.appendChild(row);
+      }
+    }
+    panel.style.display = '';
+  }
+
+  /* ── Map ───────────────────────────── */
+  let mapInst = null;
+  let mapMarkers = [];
+
+  function ensureMap(){
+    if(mapInst) return mapInst;
+    const empty = $('mapEmpty');
+    if(empty) empty.style.display = 'none';
+    mapInst = L.map('mapWrap', {
+      attributionControl: false, zoomControl: true,
+    }).setView([39.5, -98.35], 4);  // continental US default
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+    }).addTo(mapInst);
+    // Leaflet needs a size invalidation when its container was display:none
+    setTimeout(() => mapInst.invalidateSize(), 50);
+    return mapInst;
+  }
+
+  function onMapCard(msg){
+    const map = ensureMap();
+    // Clear previous markers — the latest tool call replaces the view.
+    for(const m of mapMarkers) map.removeLayer(m);
+    mapMarkers = [];
+
+    if(msg.title) $('mapTitle').textContent = msg.title;
+    $('mapHint').textContent = '';
+
+    const points = (msg.markers || []).filter(m => m.lat != null && m.lon != null);
+    if(points.length){
+      for(const p of points){
+        const marker = L.marker([p.lat, p.lon]).addTo(map);
+        if(p.popup) marker.bindPopup(p.popup);
+        mapMarkers.push(marker);
+      }
+      if(points.length === 1){
+        map.setView([points[0].lat, points[0].lon], msg.zoom || 9);
+        mapMarkers[0].openPopup();
+      } else {
+        const group = L.featureGroup(mapMarkers);
+        map.fitBounds(group.getBounds().pad(0.2));
+      }
+    } else if(msg.lat != null && msg.lon != null){
+      map.setView([msg.lat, msg.lon], msg.zoom || 9);
+    }
+
+    const valEl = $('mapValues');
+    if(msg.values && msg.values.length){
+      valEl.innerHTML = msg.values.map(([k, v]) =>
+        `<span class="mv-pair">${esc(k)}<b>${esc(v)}</b></span>`
+      ).join('');
+      valEl.style.display = '';
+    } else {
+      valEl.style.display = 'none';
+      valEl.innerHTML = '';
+    }
+    setTimeout(() => map.invalidateSize(), 30);
+  }
+
+  function onToolCall(msg){
+    hideEmpty();
+    const div = document.createElement('div');
+    div.className = 'msg tool-call';
+    let argStr = '';
+    try { argStr = JSON.stringify(msg.args || {}); } catch(e) { argStr = String(msg.args); }
+    let resStr = '';
+    try { resStr = JSON.stringify(msg.result || {}); } catch(e) { resStr = String(msg.result); }
+    if(resStr.length > 240) resStr = resStr.slice(0, 237) + '...';
+    div.innerHTML = `<div><span class="tool-call-name">[tool] ${esc(msg.name)}</span> ${esc(argStr)}</div>`
+      + `<div class="tool-call-detail">${esc(resStr)}</div>`;
+    $('messages').appendChild(div);
+    scrollChat();
   }
 
   function updateConfig(cfg){

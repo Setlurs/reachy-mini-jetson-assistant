@@ -5,12 +5,30 @@
 # Edit if you need flags: --no-wireless for a wired Reachy Mini Lite,
 # --on-device when running this on the robot's own CM4.
 #
-# OS_ACTIVITY_MODE=disable silences the "Context leak detected,
-# CoreAnalytics returned false" log spam emitted by macOS CoreML when
-# Kokoro TTS picks the CoreMLExecutionProvider. Harmless either way.
-# (The one-shot AVFFrameReceiver / AVFAudioReceiver objc duplication
-# warnings at startup are emitted before any env var can suppress them
-# — they're a known cv2 / PyAV libavdevice symbol clash, also harmless.)
+# Two layers of macOS log quieting:
+#
+# 1. OS_ACTIVITY_MODE=disable nudges Apple frameworks to emit fewer
+#    activity-trace messages from CoreML / AVFoundation / CoreAnalytics.
+#    On newer macOS this no longer covers everything (subprocesses
+#    spawned by Kokoro TTS don't always inherit it, and the
+#    duplicate-class objc warnings fire before any env var can take
+#    effect).
+#
+# 2. A stderr filter strips the harmless residual noise:
+#      - "Context leak detected, CoreAnalytics returned false"   (CoreML)
+#      - duplicate-class warnings from cv2 / PyAV (libavdevice)  — both
+#        ship their own bundled FFmpeg dylib and Apple's objc runtime
+#        complains. We can't uninstall PyAV (aiortc + faster-whisper
+#        depend on it) so we silence the warning instead.
+#
+# All filtered lines are pure noise; real Python tracebacks and rich
+# console output go through stdout (or other stderr lines) untouched.
 source venv/bin/activate && \
-    OS_ACTIVITY_MODE=disable python3 run_web_vision_chat.py
+    OS_ACTIVITY_MODE=disable \
+    PYTHONWARNINGS="ignore::UserWarning:multiprocessing.resource_tracker" \
+    python3 run_web_vision_chat.py 2> >(
+        grep --line-buffered -v -E \
+            'Context leak detected|^objc\[[0-9]+\]: Class (AVFFrameReceiver|AVFAudioReceiver) is implemented in both|This may cause spurious casting failures|One of the duplicates must be removed' \
+            >&2
+    )
 # http://localhost:8090/

@@ -65,3 +65,7 @@ temp/
 .coverage
 coverage.xml
 htmlcov/
+
+# Vendored reference repo cloned for design inspiration (issue #2 tool calling).
+# Not part of this project; kept locally for cross-reference only.
+reachy_mini_conversation_app_local/

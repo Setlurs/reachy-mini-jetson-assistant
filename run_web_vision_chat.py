@@ -52,6 +52,9 @@ from app.reachy import (
 from app.emotion import EmotionDetector
 from app.movements import MovementController
 from app.web import Broadcaster, start_web_server
+from app.tools import (
+    ToolDependencies, dispatch_tool_call, get_tool_specs, get_tools_info,
+)
 from rich.console import Console
 from rich.panel import Panel
 
@@ -177,6 +180,16 @@ def main():
             except Exception:
                 pass
         cam.close()
+        # TTS is a subprocess holding its own stdin/stdout pipes (and onnx
+        # runtime resources). Explicitly tear it down so the process is
+        # reaped and pipes are closed before the parent exits — without
+        # this, multiprocessing's resource tracker reports a leaked
+        # semaphore and Python prints "subprocess still running" warnings.
+        if tts:
+            try:
+                tts.unload()
+            except Exception:
+                pass
         if reachy and config.reachy.sleep_on_exit:
             try:
                 signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -220,6 +233,29 @@ def main():
 
     vision_system_prompt = config.vision.system_prompt
     vision_few_shot = config.vision.few_shot or []
+
+    # When tool calling is on we don't auto-attach the camera frame anymore
+    # (analyze_image is the way to see). The default vision prompt assumes
+    # an image is always present, which leads small models to hallucinate
+    # scenes. Prepend a tool-aware preamble — generated from the live
+    # registry so adding/removing a tool updates the prompt automatically.
+    if config.llm.tools_enabled:
+        _tool_lines = [
+            f"- {t['name']}: {t['description']}"
+            for t in get_tools_info(config.llm.enabled_tools or None)
+        ]
+        if _tool_lines:
+            vision_system_prompt = (
+                "You have function-calling tools listed below. No image, web "
+                "data, or sensor reading is available to you unless you call "
+                "the matching tool yourself — never invent visual details, "
+                "weather, or facts you would otherwise need a tool for. Use "
+                "your own knowledge only when no tool is appropriate.\n"
+                "Tools:\n"
+                + "\n".join(_tool_lines)
+                + "\n\n"
+                + vision_system_prompt
+            )
     llm = LLM(
         model=config.llm.model, base_url=config.llm.base_url,
         backend=config.llm.backend, max_tokens=config.llm.max_tokens,
@@ -295,12 +331,41 @@ def main():
         "silero_threshold": config.vad.silero_threshold if config.vad.use_silero else None,
         "beam_size": config.stt.beam_size,
     }
+    enabled_tools = config.llm.enabled_tools or None
+    tools_info_payload = {
+        "enabled": bool(config.llm.tools_enabled),
+        "tools": get_tools_info(enabled_tools) if config.llm.tools_enabled else [],
+    }
     broadcaster.send({
         "type": "info",
         "models": model_info,
         "platform": platform_name,
         "config": config_info,
+        "tools": tools_info_payload,
     })
+
+    tool_specs = get_tool_specs(enabled_tools) if config.llm.tools_enabled else []
+    tool_deps = ToolDependencies(
+        reachy=reachy,
+        movement_controller=mover,
+        camera=cam,
+        llm=llm,
+        broadcaster=broadcaster,
+        antenna_rest=config.reachy.antenna_rest_position,
+    )
+
+    def _emit_tool_call(name: str, args: dict, result: dict):
+        broadcaster.send({
+            "type": "tool_call",
+            "name": name,
+            "args": args,
+            "result": result,
+        })
+        sys.stdout.write(f"\n  [tool] {name}({args}) -> {str(result)[:160]}\n")
+        sys.stdout.flush()
+
+    async def _tool_dispatcher(name: str, raw_args):
+        return await dispatch_tool_call(name, raw_args, tool_deps)
 
     n_frames = config.vision.frames
     n_fewshot = len(vision_few_shot) // 2
@@ -351,8 +416,13 @@ def main():
                 mic.resume()
                 continue
 
+            # Filler threshold: in chat-only mode, drop very short non-questions
+            # (coughs, partial words, "uh"). With tools enabled, two-word
+            # imperatives like "Look left" or "Be happy" are valid commands —
+            # only filter true single-word grunts.
+            filler_max = 1 if config.llm.tools_enabled else 2
             word_count = len(text.split())
-            if word_count <= 2 and "?" not in text:
+            if word_count <= filler_max and "?" not in text:
                 console.print(f"[dim]  (skipped filler: \"{text}\")[/dim]")
                 broadcaster.send({"type": "status", "stage": "listening"})
                 mic.resume()
@@ -400,11 +470,28 @@ def main():
             t_llm = time.perf_counter()
             ttft = None
 
-            for chunk_data in llm.generate_stream(
-                prompt=text, system_prompt=vision_system_prompt,
-                images_b64=captured_frames if captured_frames else None,
-                few_shot=vision_few_shot if vision_few_shot else None,
-            ):
+            if config.llm.tools_enabled and tool_specs:
+                # Tool path: non-streaming first call (with tools), dispatch
+                # any invoked tools, then streaming final response. Multimodal
+                # frames are intentionally omitted from the tool path — the
+                # analyze_image tool is what hands the model an image when it
+                # actually needs one.
+                stream_iter = llm.generate_with_tools(
+                    prompt=text,
+                    tools=tool_specs,
+                    dispatcher=_tool_dispatcher,
+                    system_prompt=vision_system_prompt,
+                    few_shot=vision_few_shot if vision_few_shot else None,
+                    on_tool_call=_emit_tool_call,
+                )
+            else:
+                stream_iter = llm.generate_stream(
+                    prompt=text, system_prompt=vision_system_prompt,
+                    images_b64=captured_frames if captured_frames else None,
+                    few_shot=vision_few_shot if vision_few_shot else None,
+                )
+
+            for chunk_data in stream_iter:
                 content, meta = chunk_data if isinstance(chunk_data, tuple) else (chunk_data, {})
                 if content:
                     if ttft is None:

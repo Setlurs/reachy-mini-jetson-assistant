@@ -48,6 +48,11 @@ class Broadcaster:
         self._lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._ptt = threading.Event()
+        # Cached one-shot init payload (models, platform, tools, config) sent
+        # to each new WebSocket on connect. Without this, the pipeline's
+        # initial broadcast lands before any browser is connected and gets
+        # dropped, leaving the Tools panel and config block empty.
+        self._info: Optional[dict] = None
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         self._loop = loop
@@ -78,6 +83,11 @@ class Broadcaster:
 
     def send(self, msg: dict):
         """Enqueue *msg* for every connected client (thread-safe)."""
+        # Cache `info` so late-arriving clients still get registry/config
+        # state. Subsequent info messages replace the cache.
+        if msg.get("type") == "info":
+            with self._lock:
+                self._info = msg
         loop = self._loop
         if not loop:
             return
@@ -89,6 +99,10 @@ class Broadcaster:
                     pass
                 except Exception:
                     pass
+
+    def cached_info(self) -> Optional[dict]:
+        with self._lock:
+            return self._info
 
 
 def create_app(broadcaster: Broadcaster) -> FastAPI:
@@ -115,6 +129,9 @@ def create_app(broadcaster: Broadcaster) -> FastAPI:
         broadcaster.register(q)
 
         q.put_nowait({"type": "ptt_state", "active": broadcaster.ptt_active})
+        cached = broadcaster.cached_info()
+        if cached is not None:
+            q.put_nowait(cached)
 
         async def _sender():
             try:

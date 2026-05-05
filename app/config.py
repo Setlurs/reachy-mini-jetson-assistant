@@ -32,6 +32,8 @@ class LLMConfig:
     timeout: float = 120.0
     system_prompt: str = "You are a helpful AI assistant."
     system_prompt_no_rag: str = "You are a helpful AI assistant. Answer from your own knowledge."
+    tools_enabled: bool = False
+    enabled_tools: List[str] = field(default_factory=list)
 
 
 @dataclass

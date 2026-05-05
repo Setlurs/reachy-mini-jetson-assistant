@@ -15,9 +15,40 @@
 
 """LLM — Ollama or OpenAI-compatible backend (llama.cpp)."""
 
+import asyncio
 import httpx
 import json
-from typing import Optional, Iterator, Dict, Any
+from typing import Optional, Iterator, Dict, Any, Callable, List, Awaitable
+
+
+def _summarize_tool_results(messages: list) -> str:
+    """Build a one-line spoken fallback from the most recent tool messages.
+
+    Used when the model declines to produce post-tool narration. Prefers the
+    tool's own `summary` / `description` field, then the textual error, then
+    a generic confirmation so the assistant always says something.
+    """
+    parts: list[str] = []
+    for m in messages:
+        if m.get("role") != "tool":
+            continue
+        try:
+            data = json.loads(m.get("content") or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            continue
+        text = (
+            data.get("summary")
+            or data.get("description")
+            or data.get("error")
+            or data.get("status")
+        )
+        if text:
+            parts.append(str(text))
+    if not parts:
+        return ""
+    return parts[-1] if len(parts) == 1 else " ".join(parts)
 
 
 class LLM:
@@ -191,6 +222,148 @@ class LLM:
         except Exception as e:
             print(f"LLM stream error: {e}")
             yield ("", {})
+
+    def generate_with_tools(
+        self,
+        prompt: str,
+        tools: List[Dict[str, Any]],
+        dispatcher: Callable[[str, Any], Awaitable[Dict[str, Any]]],
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        few_shot: Optional[list[dict]] = None,
+        on_tool_call: Optional[Callable[[str, Dict[str, Any], Dict[str, Any]], None]] = None,
+        max_rounds: int = 1,
+    ) -> Iterator[tuple]:
+        """Non-streaming tool round, then streaming final response.
+
+        Flow:
+          1. Make a non-streaming chat completion request with `tools` set so
+             we can cleanly inspect the response for tool_calls.
+          2. If no tool_calls, yield the assistant content as a single chunk.
+          3. Otherwise dispatch each call via `dispatcher(name, args)`,
+             append tool results, optionally repeat (max_rounds), then make a
+             final streaming call so TTS still gets token-by-token output.
+
+        Yields (content, metadata) tuples like generate_stream(). Tool calls
+        themselves are surfaced via the optional `on_tool_call` callback so
+        the caller can broadcast them to the UI.
+        """
+        if not self._loaded:
+            yield ("", {})
+            return
+
+        mt = max_tokens or self.max_tokens
+        t = temperature if temperature is not None else self.temperature
+        messages = self._messages(prompt, system_prompt, few_shot)
+
+        # Tool-calling currently lives on the OpenAI-compatible path only.
+        # Ollama exposes /v1/chat/completions which accepts the `tools` field
+        # for capable models; the native /api/chat tools shape differs and is
+        # not wired up here.
+        if self.backend != "openai":
+            yield from self._stream_openai(messages, mt, t)
+            return
+
+        for _round in range(max(1, max_rounds)):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    payload: Dict[str, Any] = {
+                        "model": self.model,
+                        "messages": messages,
+                        "max_tokens": mt,
+                        "temperature": t,
+                        "stream": False,
+                    }
+                    if tools:
+                        payload["tools"] = tools
+                        payload["tool_choice"] = "auto"
+                    r = client.post(
+                        f"{self.base_url}/v1/chat/completions", json=payload,
+                    )
+                    if r.status_code != 200:
+                        err = r.text[:300]
+                        print(f"\n  [LLM tool-call error {r.status_code}] {err}")
+                        yield ("", {})
+                        return
+                    data = r.json()
+            except Exception as e:
+                print(f"LLM tool-call request error: {e}")
+                yield ("", {})
+                return
+
+            choice = (data.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            tool_calls = msg.get("tool_calls") or []
+
+            if not tool_calls:
+                content = msg.get("content") or ""
+                if content:
+                    yield (content, {})
+                yield ("", {"done": True, "eval_count": (data.get("usage") or {}).get("completion_tokens", 0)})
+                return
+
+            # Append assistant turn that requested tools, then run them.
+            # Per OpenAI spec, content should be null when tool_calls is set.
+            messages.append({
+                "role": "assistant",
+                "content": msg.get("content") or None,
+                "tool_calls": tool_calls,
+            })
+
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                name = fn.get("name") or ""
+                raw_args = fn.get("arguments")
+                try:
+                    parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except Exception:
+                    parsed_args = {}
+                try:
+                    result = asyncio.run(dispatcher(name, raw_args))
+                except RuntimeError:
+                    # Already in an event loop — fall back to a fresh loop.
+                    loop = asyncio.new_event_loop()
+                    try:
+                        result = loop.run_until_complete(dispatcher(name, raw_args))
+                    finally:
+                        loop.close()
+                except Exception as e:
+                    result = {"error": f"{type(e).__name__}: {e}"}
+
+                if on_tool_call is not None:
+                    try:
+                        on_tool_call(name, parsed_args if isinstance(parsed_args, dict) else {}, result)
+                    except Exception:
+                        pass
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "name": name,
+                    "content": json.dumps(result, default=str),
+                })
+
+        # Final streaming pass with tool results in context. Some models
+        # (notably small ones like gemma) sometimes return zero tokens after
+        # a tool round, treating the tool result as the answer. That leaves
+        # the UI without an assistant bubble and TTS silent, so we fall back
+        # to a narration synthesized from the tool results when the stream
+        # is empty.
+        produced_any = False
+        last_meta: Dict[str, Any] = {}
+        for chunk, meta in self._stream_openai(messages, mt, t):
+            if chunk:
+                produced_any = True
+            if meta:
+                last_meta = meta
+            yield (chunk, meta)
+
+        if not produced_any:
+            fallback = _summarize_tool_results(messages)
+            if fallback:
+                yield (fallback, {})
+                yield ("", {"done": True, "eval_count": last_meta.get("eval_count", 0)})
 
     def health_check(self) -> bool:
         if not self._loaded:

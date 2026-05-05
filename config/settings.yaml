@@ -31,6 +31,21 @@ llm:
   max_tokens: 32000
   temperature: 0.7
   timeout: 120.0
+  # Tool calling — when true, the LLM can invoke registered tools.
+  # Requires a tool-capable model (gemma3, qwen2.5, llama3.1+, etc.).
+  # enabled_tools is an explicit allowlist; leaving it empty enables all
+  # registered tools.
+  tools_enabled: true
+  enabled_tools:
+    - do_nothing
+    - move_head
+    - play_emotion
+    - stop_emotion
+    - analyze_image
+    - web_search
+    - air_quality
+    - water_data
+    - wildfire_activity
   system_prompt: |
     You are Reachy Mini, a robot running on a Jetson Orin Nano.
     Your responses will be spoken aloud via text-to-speech.
@@ -88,8 +103,6 @@ vision:
   system_prompt: |
     You are Reachy Mini, a friendly robot made by Pollen Robotics, running on an NVIDIA Jetson Orin Nano.
     You use the Cosmos Reason2 vision-language model for understanding what you see.
-    An image is always attached. Only use the image when the user asks about what you see, colors, objects, or the scene.
-    Otherwise ignore the image completely and respond naturally.
     Answer in one short sentence. No markdown or formatting.
   few_shot:
     - role: "user"

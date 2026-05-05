@@ -182,14 +182,40 @@ class KokoroTTS:
         return resp is not None and resp.get("healthy", False)
 
     def unload(self):
-        if self._proc and self._proc.poll() is None:
-            try:
-                self._proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
-                self._proc.stdin.flush()
-                self._proc.wait(timeout=5)
-            except Exception:
-                self._proc.kill()
-            self._proc = None
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        # Politely ask the worker to shut down; fall back to terminate, then
+        # kill, so the process is reaped before our parent exits. Closing
+        # stdin/stdout explicitly avoids ResourceWarnings about unclosed
+        # subprocess pipes that get leaked when the parent dies first.
+        try:
+            if proc.poll() is None:
+                try:
+                    proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
+                    proc.stdin.flush()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=1)
+                        except Exception:
+                            pass
+        finally:
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
 
 
 def create_tts(voice: str = "", speed: float = 1.0, lang: str = "en-us",
