@@ -71,6 +71,13 @@ stt:
   beam_size: 1                        # 1=greedy (fast), 5=beam (quality)
 
 tts:
+  # Backend selector. "kokoro" (default) is the fast 82M-param model with
+  # built-in voices. "xtts" routes to XTTS-v2 voice cloning — slower
+  # (~1.5–2.5s extra TTFA) but speaks in a cloned voice from
+  # tts.xtts_speaker_wav. Requires `pip install -r requirements-xtts.txt`
+  # before flipping the flag.
+  backend: "kokoro"
+  #backend: "xtts"
   voice: "af_sarah"                   # kokoro voices: af_sarah, af_bella, am_adam, bf_emma, bm_george, etc.
   speed: 1.0
   lang: "en-us"                       # kokoro language code
@@ -84,6 +91,13 @@ tts:
   # uses the _chars values above).
   first_chunk_words: 3
   max_chunk_words: 8
+  # XTTS-v2 voice-cloning params (used only when backend == "xtts").
+  # speaker_wav is a path to ~6–15s of clean speech in the voice to
+  # clone — see SETUP.md for capture guidance. Relative paths resolve
+  # from the project root.
+  xtts_speaker_wav: "voices/clone.wav"
+  xtts_language: "en"                 # XTTS supports en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, ja, hu, ko, hi
+  xtts_temperature: 0.7               # higher = more variation in prosody
 
 audio:
   sample_rate: 16000

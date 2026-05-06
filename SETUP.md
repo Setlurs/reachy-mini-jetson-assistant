@@ -351,3 +351,62 @@ device via mDNS — no token or URL configuration is required on this side.
 - The satellite owns its own ReachyMini SDK instance. The Reachy Mini daemon's WebRTC media stream supports both subscribers (our LLM pipeline + the satellite) in parallel.
 - Both processes are reaped on Ctrl-C — no orphans, no stuck WebRTC sessions.
 - Your existing PTT path on `:8090` and tool calling are unchanged. The satellite handles only utterances that begin with its wake word.
+
+## Voice cloning with XTTS-v2 (optional)
+
+Kokoro is the fast default TTS (~0.2 s time-to-first-audio) and ships
+fixed voices. To make the robot speak in *your* voice instead, switch
+to the XTTS-v2 backend. Trade-off: ~1.5–2.5 s extra synthesis latency
+and ~1.5 GB more RAM, but the voice cloning quality is the headline.
+
+### One-time setup
+
+1. **Capture a reference WAV** of your voice — 6 to 15 seconds of clean
+   conversational speech in a quiet room. The
+   [rainbow passage](https://en.wikipedia.org/wiki/The_rainbow_passage)
+   read naturally is a common choice. Trim to ~10 s, mono, 22050 Hz or
+   24000 Hz, save as `voices/clone.wav` (or any path you like).
+
+2. **Install XTTS dependencies** into the same venv. They live in a
+   separate requirements file so default installs stay light:
+
+   ```bash
+   pip install -r requirements-xtts.txt
+   ```
+
+   First synthesis triggers a ~1.5 GB model download into the TTS
+   cache — that takes a few minutes. Subsequent runs use the cache.
+
+3. **Flip the backend in `config/settings.yaml`**:
+
+   ```yaml
+   tts:
+     backend: "xtts"
+     xtts_speaker_wav: "voices/clone.wav"
+     xtts_language: "en"
+     xtts_temperature: 0.7
+   ```
+
+4. **Restart `./run`**. You'll see:
+
+   ```
+   ✓ TTS (XTTS-v2, clone of clone)
+   ```
+
+   on startup. Every TTS chunk now plays in the cloned voice.
+
+### Notes
+
+- If XTTS fails to load (missing deps, missing WAV, model download
+  failure), the launcher falls back to Kokoro for the session and
+  prints `⚠ XTTS unavailable; falling back to Kokoro` — the demo
+  doesn't go silent.
+- License: XTTS-v2 model weights are under
+  [Coqui's CPML](https://coqui.ai/cpml) (non-commercial). Suitable for
+  demos and personal use; consult the model card before any
+  commercial deployment.
+- Apple Silicon: XTTS works on MPS but some ops fall back to CPU. If
+  you hit MPS-specific issues, `XTTS_DISABLE_MPS=1 ./run` pins it to
+  CPU.
+- To switch back to Kokoro at any time, set `tts.backend: "kokoro"`
+  and restart — no rebuild, no other config changes needed.

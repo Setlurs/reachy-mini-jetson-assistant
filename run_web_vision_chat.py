@@ -281,12 +281,34 @@ def main():
     console.print(f"  ✓ VLM ({llm.model})")
 
     tts = create_tts(
-        voice=config.tts.voice, speed=config.tts.speed, lang=config.tts.lang,
+        backend=config.tts.backend,
+        voice=config.tts.voice,
+        speed=config.tts.speed,
+        lang=config.tts.lang,
+        xtts_speaker_wav=config.tts.xtts_speaker_wav,
+        xtts_language=config.tts.xtts_language,
+        xtts_temperature=config.tts.xtts_temperature,
     )
-    tts = tts if tts.load() else None
-    if tts:
+    if tts.load():
         console.print(f"  ✓ TTS ({tts.backend_name}, {tts.voice})")
+    elif config.tts.backend.lower() == "xtts":
+        # Graceful fallback: if XTTS fails to load (missing deps, missing
+        # speaker WAV, model download failure), drop back to Kokoro so the
+        # demo still has a voice instead of going silent.
+        console.print("  [yellow]⚠ XTTS unavailable; falling back to Kokoro[/yellow]")
+        tts = create_tts(
+            backend="kokoro",
+            voice=config.tts.voice,
+            speed=config.tts.speed,
+            lang=config.tts.lang,
+        )
+        tts = tts if tts.load() else None
+        if tts:
+            console.print(f"  ✓ TTS ({tts.backend_name}, {tts.voice})")
+        else:
+            console.print("  ⚠ TTS unavailable")
     else:
+        tts = None
         console.print("  ⚠ TTS unavailable")
 
     emotion_detector = None

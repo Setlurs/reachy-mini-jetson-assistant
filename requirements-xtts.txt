@@ -1,0 +1,25 @@
+# Optional dependencies for the XTTS-v2 voice-cloning TTS backend.
+# Install only when flipping config/settings.yaml::tts.backend to "xtts":
+#
+#     pip install -r requirements-xtts.txt
+#
+# The model weights (~1.5 GB) download automatically on first use into
+# the venv's TTS cache. License: Coqui CPML (non-commercial). See
+# https://huggingface.co/coqui/XTTS-v2 for terms.
+
+# Coqui's TTS package was renamed to coqui-tts after the original
+# company shutdown; this fork is the actively-maintained one.
+# The [codec] extra pulls torchcodec, required for audio IO under
+# PyTorch >=2.9 (which is what Python 3.14 wheels resolve to).
+coqui-tts[codec]>=0.24.0
+
+# Transformers must stay on the 4.x line: coqui-tts 0.27.x imports
+# `isin_mps_friendly` from `transformers.pytorch_utils`, which was
+# removed in transformers 5.0. coqui-tts's own metadata says
+# `transformers>=4.57` so anything in [4.57, 5.0) works.
+transformers>=4.57,<5.0
+
+# XTTS pulls torch + torchaudio. Pin to the same loose constraint we
+# already accept in the satellite repo so Python 3.14 wheels resolve.
+torch>=2.5.1
+torchaudio>=2.5.1

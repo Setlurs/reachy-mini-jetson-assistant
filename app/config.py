@@ -47,6 +47,11 @@ class STTConfig:
 
 @dataclass
 class TTSConfig:
+    # Backend selector — "kokoro" (fast, fixed voices) or "xtts" (slower,
+    # voice-cloning from a reference WAV). The factory in app/tts.py
+    # routes based on this; if the chosen backend fails to load, the
+    # caller falls back to Kokoro for the session.
+    backend: str = "kokoro"
     voice: str = "af_sarah"
     speed: float = 1.0
     lang: str = "en-us"
@@ -59,6 +64,12 @@ class TTSConfig:
     # time-to-first-audio, subsequent chunks aim for full sentences.
     first_chunk_chars: int = 60
     max_chunk_chars: int = 150
+    # XTTS-v2 voice-cloning params (used only when backend == "xtts").
+    # speaker_wav is a path to a 6–15s WAV of clean speech in the voice
+    # to clone; relative paths resolve from the project root.
+    xtts_speaker_wav: str = "voices/clone.wav"
+    xtts_language: str = "en"
+    xtts_temperature: float = 0.7
 
 
 @dataclass
