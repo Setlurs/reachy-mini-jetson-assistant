@@ -161,9 +161,13 @@ ha:
   # Wireless mode only — wired Lite SKU can't share the mic this way.
   # Requires `pip install -e Reachy_Mini_For_Home_Assistant/` (or pip
   # install reachy-mini-home-assistant) into the same venv first.
-  enabled: false
+  enabled: true
   wake_model: "okay_nabu"             # passed through to the satellite
   satellite_log_level: "info"         # debug | info | warning | error
+  # Reachy daemon HTTP API (volume control + status). Default points at
+  # the robot's mDNS name for remote wireless setups. On-device users
+  # should set this to http://127.0.0.1:8000.
+  daemon_url: "http://reachy-mini.local:8000"
 
 rag:
   enabled: true

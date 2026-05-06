@@ -34,9 +34,11 @@ class HASatellite:
         self,
         wake_model: str = "okay_nabu",
         log_level: str = "info",
+        daemon_url: str = "",
     ):
         self.wake_model = wake_model
         self.log_level = (log_level or "info").lower()
+        self.daemon_url = daemon_url
         self._proc: Optional[subprocess.Popen] = None
 
     def start(self) -> bool:
@@ -54,8 +56,12 @@ class HASatellite:
             )
             return False
 
+        # Spawn through our motor-stubbing wrapper so the satellite's own
+        # MovementManager can't actuate the head/antennas. This project
+        # owns motor control end-to-end; the satellite is audio + ESPHome
+        # only. CLI args pass through to the satellite via sys.argv.
         cmd = [
-            sys.executable, "-m", "reachy_mini_home_assistant",
+            sys.executable, "-m", "app.ha_satellite_wrapper",
             "--wake-model", self.wake_model,
         ]
         if self.log_level == "debug":
@@ -63,7 +69,11 @@ class HASatellite:
 
         env = os.environ.copy()
         # Subprocess inherits OS_ACTIVITY_MODE / PYTHONWARNINGS from the
-        # launcher; nothing extra to set here.
+        # launcher. We also override REACHY_DAEMON_URL so the satellite's
+        # volume / status HTTP calls go to the robot rather than its
+        # default 127.0.0.1, which only works in on-device mode.
+        if self.daemon_url:
+            env["REACHY_DAEMON_URL"] = self.daemon_url
 
         try:
             self._proc = subprocess.Popen(

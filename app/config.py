@@ -155,6 +155,11 @@ class HAConfig:
     enabled: bool = False
     wake_model: str = "okay_nabu"
     satellite_log_level: str = "info"
+    # Hostname:port of the Reachy Mini daemon's HTTP API (used by the
+    # satellite for volume control and status reads). The satellite
+    # defaults to 127.0.0.1:8000 which only works in on-device mode; for
+    # remote wireless setups, point this at the robot's mDNS name.
+    daemon_url: str = "http://reachy-mini.local:8000"
 
 
 _SECTIONS = [

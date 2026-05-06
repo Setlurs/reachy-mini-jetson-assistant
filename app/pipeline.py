@@ -140,6 +140,15 @@ def play_audio(audio: np.ndarray, sample_rate: int, sink=None):
     exposes as pa_sink).
     """
     # Wireless path — push to the robot speaker over WebRTC/GStreamer.
+    #
+    # The reachy_mini_conversation_app reference pushes audio in many
+    # small chunks because Kokoro's stream_tts_sync yields ~10ms slices
+    # as synthesis progresses. Our tts.py uses kokoro.create() which
+    # returns the whole utterance at once, so a naive single push of
+    # ~3 s of audio overflows the WebRTC pipeline buffer and the tail
+    # gets dropped. Slicing into ~0.5 s pieces and pushing them
+    # sequentially lands us in the same regime as the reference: each
+    # push is small enough that the buffer accepts it cleanly.
     if sink is not None and not isinstance(sink, str):
         robot = sink
         try:
@@ -156,7 +165,18 @@ def play_audio(audio: np.ndarray, sample_rate: int, sink=None):
                 xp = np.linspace(0.0, 1.0, n_in, endpoint=False, dtype=np.float32)
                 xq = np.linspace(0.0, 1.0, n_out, endpoint=False, dtype=np.float32)
                 float_pcm = np.interp(xq, xp, float_pcm).astype(np.float32)
-            robot.media.push_audio_sample(float_pcm)
+
+            slice_seconds = 0.5
+            slice_samples = max(1, int((target_sr or sample_rate) * slice_seconds))
+            total = float_pcm.shape[0]
+            for start in range(0, total, slice_samples):
+                end = min(start + slice_samples, total)
+                robot.media.push_audio_sample(float_pcm[start:end])
+                # Pace at slightly under realtime so the pipeline can
+                # drain a slice before we feed the next one. This avoids
+                # the buffer overflow that drops the tail of long pushes.
+                if end < total:
+                    time.sleep((end - start) / float(target_sr or sample_rate) * 0.9)
         except Exception as e:
             print(f"  [audio] robot push failed: {e}", file=sys.stderr)
         return

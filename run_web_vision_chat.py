@@ -57,6 +57,7 @@ from app.tools import (
     ToolDependencies, dispatch_tool_call, get_tool_specs, get_tools_info,
 )
 from app.ha_satellite import HASatellite, is_satellite_installed
+from app.wake_word import try_create_detector as create_wake_word_detector
 from rich.console import Console
 from rich.panel import Panel
 
@@ -326,6 +327,7 @@ def main():
             ha_satellite = HASatellite(
                 wake_model=config.ha.wake_model,
                 log_level=config.ha.satellite_log_level,
+                daemon_url=config.ha.daemon_url,
             )
             if ha_satellite.start():
                 console.print(
@@ -334,6 +336,22 @@ def main():
                 )
             else:
                 ha_satellite = None
+
+    # Wake-word filler-skip detector. When the satellite hears its wake
+    # word, our LLM pipeline must not also process the same utterance —
+    # otherwise both pipelines respond. We run the same model the
+    # satellite uses (default okay_nabu) on each captured segment and
+    # drop matching ones before STT/LLM. Detector is None when ha.enabled
+    # is off or pymicro_wakeword isn't installed; in either case the
+    # main loop falls through to its existing behavior.
+    ha_wake_detector = (
+        create_wake_word_detector(config.ha.wake_model)
+        if config.ha.enabled else None
+    )
+    if ha_wake_detector is not None:
+        console.print(
+            f"  ✓ Wake-word filler skip armed ({config.ha.wake_model})"
+        )
 
     # ── Start web server + background threads ────────────────────
     web_thread = start_web_server(broadcaster, host=web_host, port=web_port)
@@ -425,6 +443,17 @@ def main():
     else:
         broadcaster.send({"type": "status", "stage": "muted"})
 
+    # HA exchange grace window: when the satellite's wake word fires, open
+    # a window during which all VAD segments are dropped. The user's
+    # follow-up question ("what's the temperature?") usually arrives as a
+    # separate segment after the wake word and would otherwise leak into
+    # our LLM pipeline. The window auto-extends on each dropped segment
+    # so multi-turn HA exchanges stay protected, then closes naturally
+    # once the user goes quiet.
+    HA_GRACE_INITIAL_SECS = 15.0
+    HA_GRACE_EXTEND_SECS = 8.0
+    ha_grace_until = 0.0
+
     # ── Main loop ────────────────────────────────────────────────
     try:
         for segment in vad_loop(mic, console, vad_cfg=config.vad, silero=silero_model):
@@ -432,6 +461,36 @@ def main():
                 broadcaster.send({"type": "status", "stage": "muted"})
                 mic.resume()
                 continue
+
+            now = time.monotonic()
+
+            # If we're inside an HA exchange window, drop the segment
+            # without running STT/LLM and extend the window so any further
+            # follow-up turns stay covered.
+            if now < ha_grace_until:
+                console.print(
+                    f"[dim]  (HA exchange in progress — dropping "
+                    f"{segment.duration:.1f}s)[/dim]"
+                )
+                ha_grace_until = now + HA_GRACE_EXTEND_SECS
+                broadcaster.send({"type": "status", "stage": "listening"})
+                mic.resume()
+                continue
+
+            # Detect the wake word in this segment. If present, open the
+            # grace window — the question itself usually comes in a
+            # separate segment a moment later.
+            if ha_wake_detector is not None:
+                raw_audio = b"".join(segment.raw_chunks)
+                if ha_wake_detector.contains(raw_audio):
+                    ha_grace_until = now + HA_GRACE_INITIAL_SECS
+                    console.print(
+                        f"[dim]  (wake word — handing off to HA, "
+                        f"{segment.duration:.1f}s; LLM muted ~{HA_GRACE_INITIAL_SECS:.0f}s)[/dim]"
+                    )
+                    broadcaster.send({"type": "status", "stage": "listening"})
+                    mic.resume()
+                    continue
 
             broadcaster.send({"type": "status", "stage": "transcribing"})
 

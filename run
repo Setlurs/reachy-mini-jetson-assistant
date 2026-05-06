@@ -28,7 +28,7 @@ source venv/bin/activate && \
     PYTHONWARNINGS="ignore::UserWarning:multiprocessing.resource_tracker" \
     python3 run_web_vision_chat.py 2> >(
         grep --line-buffered -v -E \
-            'Context leak detected|^objc\[[0-9]+\]: Class (AVFFrameReceiver|AVFAudioReceiver) is implemented in both|This may cause spurious casting failures|One of the duplicates must be removed' \
+            'Context leak detected|^objc\[[0-9]+\]: Class (AVFFrameReceiver|AVFAudioReceiver) is implemented in both|This may cause spurious casting failures|One of the duplicates must be removed|Failed to (get|set) (speaker|microphone) volume via daemon API' \
             >&2
     )
 # http://localhost:8090/
