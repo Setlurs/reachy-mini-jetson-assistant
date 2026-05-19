@@ -220,7 +220,13 @@ class Config:
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Config":
         if config_path is None:
-            config_path = Path(__file__).parent.parent / "config" / "settings.yaml"
+            cfg_dir = Path(__file__).parent.parent / "config"
+            config_path = cfg_dir / "settings.yaml"
+            # settings.yaml is git-ignored (personal config). Fresh clones
+            # only have the tracked template; fall back to it so the app
+            # runs out of the box with the curated defaults.
+            if not os.path.exists(config_path):
+                config_path = cfg_dir / "settings.example.yaml"
         config = cls()
         if not os.path.exists(config_path):
             return config

@@ -70,3 +70,6 @@ htmlcov/
 # this project; kept locally for cross-reference only.
 reachy_mini_conversation_app_local/
 Reachy_Mini_For_Home_Assistant/
+
+# Personal config — copy from config/settings.example.yaml
+config/settings.yaml
