@@ -203,6 +203,9 @@ class MicConfig:
     # strict). Lower = easier to trigger; raise toward 0.97 if you get
     # false unmutes.
     wake_sensitivity: float = 0.9
+    # Verbose per-utterance console logging while muted / for mic-command
+    # intent (heard text, RMS, wake peak vs cutoff). Off for demos.
+    debug: bool = False
 
 
 _SECTIONS = [

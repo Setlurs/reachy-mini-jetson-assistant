@@ -463,7 +463,7 @@ def main():
         unmute_wake_detector = create_wake_word_detector(
             config.mic.wake_model,
             probability_cutoff=config.mic.wake_sensitivity,
-            debug=True,
+            debug=config.mic.debug,
         )
         if unmute_wake_detector is not None:
             console.print(
@@ -741,12 +741,13 @@ def main():
                     and unmute_wake_detector.contains(_raw)
                 )
                 _peak = getattr(unmute_wake_detector, "last_peak", 0.0)
-                console.print(
-                    f"[dim]  (muted: heard \"{_heard}\" | {segment.duration:.1f}s "
-                    f"rms={segment.rms:.4f} bytes={len(_raw)} | "
-                    f"wake[{config.mic.wake_model}]={_fired} "
-                    f"peak={_peak:.3f}/{config.mic.wake_sensitivity})[/dim]"
-                )
+                if config.mic.debug:
+                    console.print(
+                        f"[dim]  (muted: heard \"{_heard}\" | {segment.duration:.1f}s "
+                        f"rms={segment.rms:.4f} bytes={len(_raw)} | "
+                        f"wake[{config.mic.wake_model}]={_fired} "
+                        f"peak={_peak:.3f}/{config.mic.wake_sensitivity})[/dim]"
+                    )
                 _wake_say = config.mic.wake_model.replace("_", " ").title()
                 if _fired:
                     broadcaster.set_ptt(True)
@@ -861,10 +862,11 @@ def main():
             # (Unmute while muted is handled by the wake-word detector
             # in the muted branch above.)
             _mic_cmd = mic_command_intent(text, wake_model=config.mic.wake_model)
-            console.print(
-                f"[dim]  (mic-intent: \"{text}\" wake={config.mic.wake_model} "
-                f"-> {_mic_cmd!r})[/dim]"
-            )
+            if config.mic.debug:
+                console.print(
+                    f"[dim]  (mic-intent: \"{text}\" wake={config.mic.wake_model} "
+                    f"-> {_mic_cmd!r})[/dim]"
+                )
             if _mic_cmd is False:
                 broadcaster.set_ptt(False)
                 console.print(f'  [green]You:[/green] "{text}"')

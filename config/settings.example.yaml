@@ -72,6 +72,8 @@ mic:
   # with HA off) listens on each utterance; the wake word unmutes.
   wake_unmute_enabled: true
   wake_model: "alexa"   # hey_jarvis, okay_nabu, alexa, hey_mycroft
+  wake_sensitivity: 0.9      # cutoff override (model default 0.97); lower = easier
+  debug: false               # verbose per-utterance mic logging (off for demos)
 
 stt:
   model: "small.en"                   # tiny.en, base.en, small.en
