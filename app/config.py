@@ -188,8 +188,26 @@ class HAConfig:
     daemon_url: str = "http://reachy-mini.local:8000"
 
 
+@dataclass
+class MicConfig:
+    """Local wake-word unmute (independent of Home Assistant).
+
+    When muted, a self-contained pymicro_wakeword tflite model runs
+    on-device (CPU, offline — works in --local-media with HA off) on
+    each captured utterance; hearing the wake word unmutes the mic.
+    Mute-while-listening stays on the mic_status tool / UI button.
+    """
+    wake_unmute_enabled: bool = True
+    wake_model: str = "alexa"  # alexa, hey_jarvis, okay_nabu, hey_mycroft
+    # Override the model's built-in probability_cutoff (0.97 — very
+    # strict). Lower = easier to trigger; raise toward 0.97 if you get
+    # false unmutes.
+    wake_sensitivity: float = 0.9
+
+
 _SECTIONS = [
     ("llm", "llm", LLMConfig),
+    ("mic", "mic", MicConfig),
     ("stt", "stt", STTConfig),
     ("tts", "tts", TTSConfig),
     ("audio", "audio", AudioConfig),
@@ -206,6 +224,7 @@ _SECTIONS = [
 @dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
+    mic: MicConfig = field(default_factory=MicConfig)
     stt: STTConfig = field(default_factory=STTConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)

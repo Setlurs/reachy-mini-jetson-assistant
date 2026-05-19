@@ -22,6 +22,7 @@ that serves the single-page frontend and a WebSocket endpoint.
 
 import asyncio
 import json
+import queue
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -48,6 +49,9 @@ class Broadcaster:
         self._lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._ptt = threading.Event()
+        # Typed queries from the web UI text box, drained by the pipeline
+        # worker exactly like a transcribed utterance.
+        self._text_queries: "queue.Queue[str]" = queue.Queue()
         # Cached one-shot init payload (models, platform, tools, config) sent
         # to each new WebSocket on connect. Without this, the pipeline's
         # initial broadcast lands before any browser is connected and gets
@@ -60,6 +64,17 @@ class Broadcaster:
         # Callback(int) -> bool that hot-swaps the active camera. Set by
         # the entry point only in local-media mode; None otherwise.
         self._camera_switch: Optional[Callable[[int], bool]] = None
+
+    def submit_text_query(self, text: str) -> None:
+        text = (text or "").strip()
+        if text:
+            self._text_queries.put(text)
+
+    def poll_text_query(self, timeout: float = 0.5) -> Optional[str]:
+        try:
+            return self._text_queries.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
     def set_camera_switch(self, fn: Optional[Callable[[int], bool]]):
         self._camera_switch = fn
@@ -101,7 +116,13 @@ class Broadcaster:
             self._ptt.set()
         else:
             self._ptt.clear()
+        # Broadcast both: ptt_state drives the mic button, the status
+        # stage drives the "Muted / Waiting…" text. Sending them together
+        # keeps the GUI in sync no matter who toggled mute (UI button,
+        # voice command, wake word, or the mic_status tool).
         self.send({"type": "ptt_state", "active": active})
+        self.send({"type": "status",
+                   "stage": "listening" if active else "muted"})
 
     def send(self, msg: dict):
         """Enqueue *msg* for every connected client (thread-safe)."""
@@ -183,6 +204,8 @@ def create_app(broadcaster: Broadcaster) -> FastAPI:
                         msg = json.loads(data)
                         if msg.get("type") == "ptt":
                             broadcaster.set_ptt(bool(msg.get("active", False)))
+                        elif msg.get("type") == "text_query":
+                            broadcaster.submit_text_query(msg.get("text", ""))
                         elif msg.get("type") == "set_camera":
                             fn = broadcaster.camera_switch
                             if fn is not None:

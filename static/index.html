@@ -267,6 +267,12 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
           <div style="font-size:.75rem;margin-top:8px;color:var(--dim)">The robot listens through its microphone and responds via VLM + TTS.</div>
         </div>
       </div>
+      <div class="text-input-row" style="display:flex;gap:6px;padding:8px;border-top:1px solid var(--border)">
+        <input id="textQuery" type="text" autocomplete="off" placeholder="Type a question instead of speaking…"
+          style="flex:1;background:#0d1117;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:.85rem;outline:none">
+        <button id="textSend"
+          style="background:#1a4a6e;border:1px solid #58a6ff;color:#fff;border-radius:6px;padding:8px 14px;font-size:.85rem;cursor:pointer">Send</button>
+      </div>
     </div>
 
     <!-- Map panel — populated by tools that return location data
@@ -660,11 +666,26 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
       lbl.textContent = 'Unmute';
       slash.style.display = '';
     }
+    // Keep the pipeline text in lockstep with the button so the two
+    // can never disagree, even if the paired status message is delayed.
+    $('pipeStatus').textContent = pttActive ? 'Waiting for speech...' : 'Muted';
   }
 
   $('pttBtn').addEventListener('click', function(){
     if(!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({type:'ptt', active:!pttActive}));
+  });
+
+  function sendTextQuery(){
+    const inp = $('textQuery');
+    const q = (inp.value || '').trim();
+    if(!q || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({type:'text_query', text:q}));
+    inp.value = '';
+  }
+  $('textSend').addEventListener('click', sendTextQuery);
+  $('textQuery').addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){ e.preventDefault(); sendTextQuery(); }
   });
 
   /* ── Helpers ──────────────────────── */

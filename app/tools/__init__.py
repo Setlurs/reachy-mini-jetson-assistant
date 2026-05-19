@@ -23,6 +23,7 @@ from app.tools import (  # noqa: F401
     stop_emotion,
     analyze_image,
     camera_power,
+    mic_status,
     get_time,
     web_search,
     air_quality,

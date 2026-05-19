@@ -20,10 +20,38 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+class _PeakProbHandler(logging.Handler):
+    """Captures the highest 'mean prob' microWakeWord logs for an utterance.
+
+    microwakeword emits `"<wake word> mean prob: <float>"` at DEBUG when
+    debug_probabilities is on. We tap that to expose how close a missed
+    utterance got to the cutoff — the decisive signal for "raise/lower
+    the threshold" vs "the model never recognized it at all".
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.peak = 0.0
+
+    def emit(self, record):
+        msg = record.getMessage()
+        i = msg.rfind("mean prob:")
+        if i != -1:
+            try:
+                self.peak = max(self.peak, float(msg[i + len("mean prob:"):].strip()))
+            except ValueError:
+                pass
+
+
 class WakeWordDetector:
     """Offline wake-word check for one utterance at a time."""
 
-    def __init__(self, model_id: str = "okay_nabu"):
+    def __init__(
+        self,
+        model_id: str = "okay_nabu",
+        probability_cutoff: Optional[float] = None,
+        debug: bool = False,
+    ):
         from pymicro_wakeword import MicroWakeWord, Model
 
         attr = model_id.upper()
@@ -34,6 +62,21 @@ class WakeWordDetector:
             )
         self._ww = MicroWakeWord.from_builtin(getattr(Model, attr))
         self.model_id = model_id
+        self.default_cutoff = float(self._ww.probability_cutoff)
+        # The builtin cutoff (0.97) is very strict; allow an override so a
+        # clean utterance that the model scores ~0.7 still triggers.
+        if probability_cutoff is not None:
+            self._ww.probability_cutoff = float(probability_cutoff)
+        self.cutoff = float(self._ww.probability_cutoff)
+        # Peak mean-probability from the most recent contains() call.
+        self.last_peak = 0.0
+        self._peak_handler: Optional[_PeakProbHandler] = None
+        if debug:
+            self._ww.debug_probabilities = True
+            self._peak_handler = _PeakProbHandler()
+            plog = logging.getLogger("pymicro_wakeword")
+            plog.setLevel(logging.DEBUG)
+            plog.addHandler(self._peak_handler)
 
     def contains(self, audio_bytes: bytes) -> bool:
         """True if `audio_bytes` (int16 PCM, 16 kHz mono) contains the wake word.
@@ -52,25 +95,39 @@ class WakeWordDetector:
             self._ww.reset()
         except Exception:
             pass
+        if self._peak_handler is not None:
+            self._peak_handler.peak = 0.0
 
         features = MicroWakeWordFeatures()
+        hit = False
         try:
             for frame in features.process_streaming(audio_bytes):
                 if self._ww.process_streaming(frame) is True:
-                    return True
+                    hit = True
+                    break
         except Exception as e:
             logger.warning("Wake-word detection error (model=%s): %s", self.model_id, e)
             return False
-        return False
+        if self._peak_handler is not None:
+            self.last_peak = self._peak_handler.peak
+        return hit
 
 
-def try_create_detector(model_id: str) -> Optional[WakeWordDetector]:
+def try_create_detector(
+    model_id: str,
+    probability_cutoff: Optional[float] = None,
+    debug: bool = False,
+) -> Optional[WakeWordDetector]:
     """Best-effort factory. Returns None if pymicro_wakeword isn't installed
     in the venv or the model id is unknown — callers treat None as "skip
     the wake-word check entirely."
     """
     try:
-        return WakeWordDetector(model_id=model_id)
+        return WakeWordDetector(
+            model_id=model_id,
+            probability_cutoff=probability_cutoff,
+            debug=debug,
+        )
     except ImportError:
         logger.info(
             "pymicro_wakeword not installed; wake-word filler skip disabled. "

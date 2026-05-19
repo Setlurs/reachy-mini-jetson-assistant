@@ -58,6 +58,7 @@ from app.tools import (
     ToolDependencies, dispatch_tool_call, get_tool_specs, get_tools_info,
 )
 from app.tools.camera_power import camera_power_intent
+from app.tools.mic_status import mic_command_intent, mic_status_query
 from app.ha_satellite import HASatellite, is_satellite_installed
 from app.wake_word import try_create_detector as create_wake_word_detector
 from rich.console import Console
@@ -450,6 +451,32 @@ def main():
             f"  ✓ Wake-word filler skip armed ({config.ha.wake_model})"
         )
 
+    # Local wake-word unmute — independent of HA. The tflite model runs
+    # on-device (CPU, offline), so this works in --local-media with HA
+    # disabled. Reuses the HA detector instance when the models match to
+    # avoid loading the same model twice.
+    unmute_wake_detector = None
+    if config.mic.wake_unmute_enabled:
+        # Always build a dedicated detector so we can apply the
+        # sensitivity override + debug probabilities (don't share the
+        # HA one, whose cutoff must stay strict).
+        unmute_wake_detector = create_wake_word_detector(
+            config.mic.wake_model,
+            probability_cutoff=config.mic.wake_sensitivity,
+            debug=True,
+        )
+        if unmute_wake_detector is not None:
+            console.print(
+                f"  ✓ Wake-word unmute armed ({config.mic.wake_model}, "
+                f"cutoff {config.mic.wake_sensitivity}) — "
+                "say it while muted to start listening"
+            )
+        else:
+            console.print(
+                "  [yellow]⚠ Wake-word unmute unavailable "
+                "(pip install pymicro_wakeword) — use the UI button[/yellow]"
+            )
+
     # ── Start web server + background threads ────────────────────
     web_thread = start_web_server(broadcaster, host=web_host, port=web_port)
     time.sleep(0.5)
@@ -529,6 +556,148 @@ def main():
 
     from app.tts import StreamingChunker, clean_text_for_speech
 
+    def _idle_status() -> str:
+        """The resting pipeline stage — reflects mute so the GUI never
+        shows 'Waiting for speech…' while actually muted."""
+        return "listening" if broadcaster.ptt_active else "muted"
+
+    def _say(msg: str) -> None:
+        """Speak a short canned line + mirror it to the web UI."""
+        broadcaster.send({"type": "status", "stage": "speaking"})
+        broadcaster.send({"type": "token", "text": msg})
+        console.print(f"  [magenta]Assistant:[/magenta] {msg}")
+        if tts:
+            _q: queue.Queue = queue.Queue()
+            _t = threading.Thread(
+                target=tts_player, args=(tts, _q, mic.pa_sink), daemon=True,
+            )
+            _t.start()
+            _q.put(clean_text_for_speech(msg))
+            _q.put(None)
+            _t.join()
+        broadcaster.send({"type": "done", "ttft": None,
+                          "vlm_time": 0, "tokens": len(msg.split())})
+
+    # Only one query (voice or typed) generates at a time — they share
+    # the LLM, TTS subprocess, and speaker.
+    _process_lock = threading.Lock()
+
+    def _respond(text, captured_frames, dt_stt=0.0, dt_cam=0.0,
+                 n_imgs=0, emotion_tag=""):
+        """Run the VLM/tool stream for `text`, stream TTS, and broadcast.
+
+        Shared by the voice loop and the web text-query worker so a typed
+        question behaves exactly like a spoken one.
+        """
+        broadcaster.send({"type": "status", "stage": "thinking"})
+        console.print("  [magenta]Assistant:[/magenta] ", end="")
+        sys.stdout.flush()
+
+        tts_q = None
+        tts_thread = None
+        if tts:
+            tts_q = queue.Queue()
+            tts_thread = threading.Thread(
+                target=tts_player, args=(tts, tts_q, mic.pa_sink), daemon=True,
+            )
+            tts_thread.start()
+
+        full_resp = ""
+        t_llm = time.perf_counter()
+        ttft = None
+        chunker = StreamingChunker(
+            first_chunk_chars=first_chunk_chars,
+            max_chunk_chars=max_chunk_chars,
+        ) if tts_q is not None else None
+
+        def _emit_tts(s: str):
+            cleaned = clean_text_for_speech(s)
+            if cleaned and tts_q is not None:
+                tts_q.put(cleaned)
+
+        if config.llm.tools_enabled and tool_specs:
+            stream_iter = llm.generate_with_tools(
+                prompt=text,
+                tools=tool_specs,
+                dispatcher=_tool_dispatcher,
+                system_prompt=vision_system_prompt,
+                few_shot=vision_few_shot if vision_few_shot else None,
+                on_tool_call=_emit_tool_call,
+            )
+        else:
+            stream_iter = llm.generate_stream(
+                prompt=text, system_prompt=vision_system_prompt,
+                images_b64=captured_frames if captured_frames else None,
+                few_shot=vision_few_shot if vision_few_shot else None,
+            )
+
+        for chunk_data in stream_iter:
+            content, meta = chunk_data if isinstance(chunk_data, tuple) else (chunk_data, {})
+            if content:
+                if ttft is None:
+                    ttft = time.perf_counter() - t_llm
+                    broadcaster.send({"type": "status", "stage": "speaking"})
+                sys.stdout.write(content)
+                sys.stdout.flush()
+                full_resp += content
+                broadcaster.send({"type": "token", "text": content})
+                if chunker is not None:
+                    for ready in chunker.feed(content):
+                        _emit_tts(ready)
+
+        dt_llm = time.perf_counter() - t_llm
+
+        if tts_q is not None:
+            if chunker is not None:
+                tail = chunker.flush()
+                if tail:
+                    _emit_tts(tail)
+            tts_q.put(None)
+            tts_thread.join()
+
+        console.print()
+        llm.add_turn(text, full_resp)
+
+        toks = len(full_resp.split())
+        timing = f"  [dim]STT {dt_stt:.1f}s | CAM {dt_cam*1000:.0f}ms ({n_imgs} img from buf)"
+        if ttft is not None:
+            timing += f" | TTFT {ttft:.1f}s | VLM {dt_llm:.1f}s ~{toks/(dt_llm or 1):.0f}w/s"
+        else:
+            timing += " | VLM no response"
+        timing += emotion_tag
+        timing += "[/dim]"
+        console.print(timing)
+
+        broadcaster.send({
+            "type": "done",
+            "ttft": round(ttft, 2) if ttft else None,
+            "vlm_time": round(dt_llm, 2),
+            "tokens": toks,
+        })
+        broadcaster.send({"type": "status", "stage": _idle_status()})
+
+    def _text_query_worker():
+        """Drain typed queries from the web UI and answer them like speech."""
+        while True:
+            q = broadcaster.poll_text_query(timeout=0.5)
+            if not q:
+                continue
+            frames = []
+            try:
+                f = cam.capture_single() if cam else None
+                if f:
+                    frames = [f]
+            except Exception:
+                pass
+            console.print(f'  [green]You (typed):[/green] "{q}"')
+            broadcaster.send({"type": "transcript", "text": q,
+                              "stt_time": 0, "duration": 0, "emotion": None})
+            with _process_lock:
+                _respond(q, frames)
+
+    threading.Thread(target=_text_query_worker, daemon=True,
+                      name="text-query-worker").start()
+
     console.print(
         f"\n[green bold]Ready — speak anytime! "
         f"({config.vision.capture_fps} fps, {n_frames} frame{'s' if n_frames > 1 else ''} "
@@ -555,7 +724,46 @@ def main():
     try:
         for segment in vad_loop(mic, console, vad_cfg=config.vad, silero=silero_model):
             if not broadcaster.ptt_active:
-                broadcaster.send({"type": "status", "stage": "muted"})
+                # Muted: run the on-device wake-word model on the raw
+                # audio; the wake word unmutes, everything else is
+                # dropped. DEBUG: also STT the utterance and log level +
+                # detector decision so we can see exactly what the muted
+                # branch receives and why it did/didn't unmute.
+                _raw = b"".join(segment.raw_chunks)
+                _heard = ""
+                try:
+                    _dbg = stt.transcribe(segment.audio, sample_rate=SAMPLE_RATE)
+                    _heard = (_dbg.get("text") or "").strip()
+                except Exception as _e:
+                    _heard = f"<stt err: {_e}>"
+                _fired = bool(
+                    unmute_wake_detector is not None
+                    and unmute_wake_detector.contains(_raw)
+                )
+                _peak = getattr(unmute_wake_detector, "last_peak", 0.0)
+                console.print(
+                    f"[dim]  (muted: heard \"{_heard}\" | {segment.duration:.1f}s "
+                    f"rms={segment.rms:.4f} bytes={len(_raw)} | "
+                    f"wake[{config.mic.wake_model}]={_fired} "
+                    f"peak={_peak:.3f}/{config.mic.wake_sensitivity})[/dim]"
+                )
+                _wake_say = config.mic.wake_model.replace("_", " ").title()
+                if _fired:
+                    broadcaster.set_ptt(True)
+                    _say(
+                        f"Microphone on. Say '{_wake_say} stop listening' "
+                        f"to mute."
+                    )
+                    broadcaster.send({"type": "status", "stage": _idle_status()})
+                elif mic_status_query(_heard):
+                    # Answer a status question while staying muted.
+                    _say(
+                        f"I am muted, so I am only listening for the wake "
+                        f"word. Say '{_wake_say} start listening' to unmute."
+                    )
+                    broadcaster.send({"type": "status", "stage": "muted"})
+                else:
+                    broadcaster.send({"type": "status", "stage": "muted"})
                 mic.resume()
                 continue
 
@@ -570,7 +778,7 @@ def main():
                     f"{segment.duration:.1f}s)[/dim]"
                 )
                 ha_grace_until = now + HA_GRACE_EXTEND_SECS
-                broadcaster.send({"type": "status", "stage": "listening"})
+                broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()
                 continue
 
@@ -585,7 +793,7 @@ def main():
                         f"[dim]  (wake word — handing off to HA, "
                         f"{segment.duration:.1f}s; LLM muted ~{HA_GRACE_INITIAL_SECS:.0f}s)[/dim]"
                     )
-                    broadcaster.send({"type": "status", "stage": "listening"})
+                    broadcaster.send({"type": "status", "stage": _idle_status()})
                     mic.resume()
                     continue
 
@@ -610,7 +818,7 @@ def main():
                     f"[dim]  (not recognized — {segment.duration:.1f}s, "
                     f"rms={segment.rms:.4f}{', err='+err if err else ''})[/dim]"
                 )
-                broadcaster.send({"type": "status", "stage": "listening"})
+                broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()
                 continue
 
@@ -622,7 +830,7 @@ def main():
             word_count = len(text.split())
             if word_count <= filler_max and "?" not in text:
                 console.print(f"[dim]  (skipped filler: \"{text}\")[/dim]")
-                broadcaster.send({"type": "status", "stage": "listening"})
+                broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()
                 continue
 
@@ -647,6 +855,36 @@ def main():
                 "duration": round(segment.duration, 1),
                 "emotion": emo.emotion.value if emotion_detector else None,
             })
+
+            # ── Deterministic mic mute intercept ─────────────────
+            # "<wake word> mute" while listening, e.g. "Alexa mute".
+            # (Unmute while muted is handled by the wake-word detector
+            # in the muted branch above.)
+            _mic_cmd = mic_command_intent(text, wake_model=config.mic.wake_model)
+            console.print(
+                f"[dim]  (mic-intent: \"{text}\" wake={config.mic.wake_model} "
+                f"-> {_mic_cmd!r})[/dim]"
+            )
+            if _mic_cmd is False:
+                broadcaster.set_ptt(False)
+                console.print(f'  [green]You:[/green] "{text}"')
+                # Announce the wake word so demo passers-by know how to
+                # bring it back without touching the UI.
+                _wake_say = config.mic.wake_model.replace("_", " ").title()
+                _muted_msg = (
+                    f"Microphone muted. Say '{_wake_say} start listening' "
+                    f"to unmute."
+                )
+                _say(_muted_msg)
+                llm.add_turn(text, _muted_msg)
+                broadcaster.send({"type": "status", "stage": "muted"})
+                mic.resume()
+                continue
+            if _mic_cmd is True:
+                _say("The microphone is already on.")
+                broadcaster.send({"type": "status", "stage": _idle_status()})
+                mic.resume()
+                continue
 
             # ── Deterministic camera on/off intercept ────────────
             # Small models inconsistently emit set_camera_power for
@@ -685,105 +923,16 @@ def main():
                 llm.add_turn(text, msg)
                 broadcaster.send({"type": "done", "ttft": None,
                                   "vlm_time": 0, "tokens": len(msg.split())})
-                broadcaster.send({"type": "status", "stage": "listening"})
+                broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()
                 continue
 
             # ── VLM streaming with TTS + WebSocket broadcast ─────
-            broadcaster.send({"type": "status", "stage": "thinking"})
-            console.print("  [magenta]Assistant:[/magenta] ", end="")
-            sys.stdout.flush()
-
-            tts_q = None
-            tts_thread = None
-            if tts:
-                tts_q = queue.Queue()
-                tts_thread = threading.Thread(
-                    target=tts_player, args=(tts, tts_q, mic.pa_sink), daemon=True,
-                )
-                tts_thread.start()
-
-            full_resp = ""
-            t_llm = time.perf_counter()
-            ttft = None
-            chunker = StreamingChunker(
-                first_chunk_chars=first_chunk_chars,
-                max_chunk_chars=max_chunk_chars,
-            ) if tts_q is not None else None
-
-            def _emit_tts(s: str):
-                cleaned = clean_text_for_speech(s)
-                if cleaned and tts_q is not None:
-                    tts_q.put(cleaned)
-
-            if config.llm.tools_enabled and tool_specs:
-                # Tool path: non-streaming first call (with tools), dispatch
-                # any invoked tools, then streaming final response. Multimodal
-                # frames are intentionally omitted from the tool path — the
-                # analyze_image tool is what hands the model an image when it
-                # actually needs one.
-                stream_iter = llm.generate_with_tools(
-                    prompt=text,
-                    tools=tool_specs,
-                    dispatcher=_tool_dispatcher,
-                    system_prompt=vision_system_prompt,
-                    few_shot=vision_few_shot if vision_few_shot else None,
-                    on_tool_call=_emit_tool_call,
-                )
-            else:
-                stream_iter = llm.generate_stream(
-                    prompt=text, system_prompt=vision_system_prompt,
-                    images_b64=captured_frames if captured_frames else None,
-                    few_shot=vision_few_shot if vision_few_shot else None,
-                )
-
-            for chunk_data in stream_iter:
-                content, meta = chunk_data if isinstance(chunk_data, tuple) else (chunk_data, {})
-                if content:
-                    if ttft is None:
-                        ttft = time.perf_counter() - t_llm
-                        broadcaster.send({"type": "status", "stage": "speaking"})
-                    sys.stdout.write(content)
-                    sys.stdout.flush()
-                    full_resp += content
-
-                    broadcaster.send({"type": "token", "text": content})
-
-                    if chunker is not None:
-                        for ready in chunker.feed(content):
-                            _emit_tts(ready)
-
-            dt_llm = time.perf_counter() - t_llm
-
-            if tts_q is not None:
-                if chunker is not None:
-                    tail = chunker.flush()
-                    if tail:
-                        _emit_tts(tail)
-                tts_q.put(None)
-                tts_thread.join()
-
-            console.print()
-
-            llm.add_turn(text, full_resp)
-
-            toks = len(full_resp.split())
-            timing = f"  [dim]STT {dt_stt:.1f}s | CAM {dt_cam*1000:.0f}ms ({n_imgs} img from buf)"
-            if ttft is not None:
-                timing += f" | TTFT {ttft:.1f}s | VLM {dt_llm:.1f}s ~{toks/(dt_llm or 1):.0f}w/s"
-            else:
-                timing += " | VLM no response"
-            timing += emotion_tag
-            timing += "[/dim]"
-            console.print(timing)
-
-            broadcaster.send({
-                "type": "done",
-                "ttft": round(ttft, 2) if ttft else None,
-                "vlm_time": round(dt_llm, 2),
-                "tokens": toks,
-            })
-            broadcaster.send({"type": "status", "stage": "listening"})
+            # Shared with the typed-query worker; the lock keeps a voice
+            # turn and a typed turn from running the LLM/TTS at once.
+            with _process_lock:
+                _respond(text, captured_frames, dt_stt, dt_cam,
+                         n_imgs, emotion_tag)
 
             mic.resume()
 

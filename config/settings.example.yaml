@@ -43,6 +43,7 @@ llm:
     - stop_emotion
     - analyze_image
     - set_camera_power
+    - mic_status
     - get_time
     - web_search
     - air_quality
@@ -64,6 +65,13 @@ llm:
     Answer from your own knowledge.
     Never use emojis, asterisks, bullet points, markdown, code blocks, or special formatting.
     Write numbers and units as spoken words when short.
+
+mic:
+  # Local wake-word unmute. While muted, an on-device tflite model
+  # (pymicro_wakeword, runs on CPU offline — works in --local-media
+  # with HA off) listens on each utterance; the wake word unmutes.
+  wake_unmute_enabled: true
+  wake_model: "alexa"   # hey_jarvis, okay_nabu, alexa, hey_mycroft
 
 stt:
   model: "small.en"                   # tiny.en, base.en, small.en
