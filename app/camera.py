@@ -65,6 +65,36 @@ class Camera:
         self._alive = False
         self._thread: Optional[threading.Thread] = None
         self._actual_fps: float = 0.0
+        # When False the camera is powered down: the hardware device is
+        # released (capture LED off) and no frames are served, but the
+        # capture thread stays alive so it can be turned back on.
+        self._enabled: bool = True
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def set_enabled(self, on: bool) -> bool:
+        """Turn the camera on or off. Returns the resulting state.
+
+        Off releases the underlying device so the capture light goes out;
+        the background thread keeps running and reopens the device when
+        turned back on.
+        """
+        on = bool(on)
+        if on == self._enabled:
+            return self._enabled
+        if on:
+            self._enabled = True
+        else:
+            self._enabled = False
+            with self._cap_lock:
+                if self._cap is not None:
+                    self._cap.release()
+                    self._cap = None
+            with self._lock:
+                self._ring.clear()
+        return self._enabled
 
     def open(self) -> bool:
         if self._cap is not None and self._cap.isOpened():
@@ -116,8 +146,15 @@ class Camera:
                 time.sleep(sleep_for)
             t_last = time.monotonic()
 
+            if not self._enabled:
+                continue
             if self._cap is None or not self._cap.isOpened():
-                break
+                # Don't kill the thread — reopen so set_enabled(True) (and
+                # transient device drops) can recover. open() returns fast
+                # once the device/permission is available.
+                if not self.open():
+                    time.sleep(0.5)
+                    continue
             with self._cap_lock:
                 ret, frame = self._cap.read()
             if not ret:
@@ -147,6 +184,8 @@ class Camera:
         When max_frames > 1, evenly samples across the window including
         PRE_SPEECH_SECS lookback for temporal context.
         """
+        if not self._enabled:
+            return []
         if max_frames > 1:
             window_start = speech_start - PRE_SPEECH_SECS
         else:
@@ -180,6 +219,8 @@ class Camera:
 
     def capture_single(self) -> Optional[str]:
         """Grab the latest frame from the ring buffer."""
+        if not self._enabled:
+            return None
         with self._lock:
             if not self._ring:
                 return None
@@ -193,6 +234,8 @@ class Camera:
         this can be called at any rate for a smooth UI stream without
         affecting the VLM ring buffer.
         """
+        if not self._enabled:
+            return None
         if self._cap is None or not self._cap.isOpened():
             return None
         with self._cap_lock:
@@ -211,7 +254,10 @@ class Camera:
         return self._actual_fps
 
     def health_check(self) -> bool:
-        return self._cap is not None and self._cap.isOpened() and self._alive
+        # Tied to the capture thread, not the device handle, so a
+        # powered-off camera (set_enabled(False) releases self._cap)
+        # doesn't tear down the frame-broadcast loop.
+        return self._alive
 
     def close(self):
         self._alive = False
@@ -262,6 +308,24 @@ class RobotCamera:
         self._alive = False
         self._thread: Optional[threading.Thread] = None
         self._actual_fps: float = 0.0
+        self._enabled: bool = True
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def set_enabled(self, on: bool) -> bool:
+        """Turn the camera feed on/off. The robot's media pipeline can't
+        be released from here, so 'off' just stops buffering/serving
+        frames and clears the ring."""
+        on = bool(on)
+        if on == self._enabled:
+            return self._enabled
+        self._enabled = on
+        if not on:
+            with self._lock:
+                self._ring.clear()
+        return self._enabled
 
     def _get_frame_safe(self) -> Optional[np.ndarray]:
         try:
@@ -300,6 +364,8 @@ class RobotCamera:
                 time.sleep(sleep_for)
             t_last = time.monotonic()
 
+            if not self._enabled:
+                continue
             frame = self._get_frame_safe()
             if frame is None:
                 continue
@@ -322,6 +388,8 @@ class RobotCamera:
         speech_end: float,
         max_frames: int = 3,
     ) -> list[str]:
+        if not self._enabled:
+            return []
         if max_frames > 1:
             window_start = speech_start - PRE_SPEECH_SECS
         else:
@@ -354,6 +422,8 @@ class RobotCamera:
         return result
 
     def capture_single(self) -> Optional[str]:
+        if not self._enabled:
+            return None
         with self._lock:
             if not self._ring:
                 return None
@@ -367,6 +437,8 @@ class RobotCamera:
         the most recent ring-buffer frame keeps the browser preview from
         going dark between SDK polls.
         """
+        if not self._enabled:
+            return None
         frame = self._get_frame_safe()
         if frame is None:
             with self._lock:

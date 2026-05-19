@@ -16,9 +16,121 @@
 """LLM — Ollama or OpenAI-compatible backend (llama.cpp)."""
 
 import asyncio
+import ast
 import httpx
 import json
+import re
 from typing import Optional, Iterator, Dict, Any, Callable, List, Awaitable
+
+
+def _parse_text_tool_call(content: str, tool_names) -> Optional[tuple]:
+    """Recover a tool call a small model emitted as plain text.
+
+    Models like gemma-e2b intermittently print the call into the content
+    stream instead of returning a structured tool_calls field, e.g.:
+
+        set_camera_power(on=false)
+        analyze_image{question:<|"|>what is in front of you<|"|>}
+        analyze_image({'question': 'What do you see?'})
+
+    Returns (name, args_dict) when the content is essentially just such a
+    call for a *known* tool, else None. Conservative on purpose: the call
+    must start at the beginning of the (stripped) content so ordinary
+    prose that merely mentions a tool name isn't hijacked.
+    """
+    if not content:
+        return None
+    text = content.strip()
+    # Strip wrappers some models add around tool calls.
+    for pre in ("```tool_code", "```python", "```json", "```", "tool_call:",
+                "tool_code:", "functions.", "print("):
+        if text.startswith(pre):
+            text = text[len(pre):].strip()
+    text = text.strip("`").strip()
+    # Leaked special tokens: <|"|> → " ; drop any other <|...|> markers.
+    text = re.sub(r'<\|"\|>', '"', text)
+    text = re.sub(r"<\|[^|]*\|>", "", text)
+
+    name = next(
+        (n for n in tool_names if re.match(rf"\s*{re.escape(n)}\s*[\(\{{]", text)),
+        None,
+    )
+    if name is None:
+        return None
+    open_idx = min(
+        (i for i in (text.find("(", len(name)), text.find("{", len(name))) if i != -1),
+        default=-1,
+    )
+    if open_idx == -1:
+        return None
+    open_ch = text[open_idx]
+    close_ch = ")" if open_ch == "(" else "}"
+    depth = 0
+    end = -1
+    for i in range(open_idx, len(text)):
+        if text[i] == open_ch:
+            depth += 1
+        elif text[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end == -1:
+        return None
+    body = text[open_idx + 1:end].strip()
+    if not body:
+        return (name, {})
+
+    # 1) JSON object as written.
+    for candidate in (body, "{" + body + "}"):
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return (name, obj)
+        except Exception:
+            pass
+    # 2) Python literal (single quotes, True/False/None).
+    for candidate in (body, "{" + body + "}", "dict(" + body + ")"):
+        try:
+            obj = ast.literal_eval(candidate)
+            if isinstance(obj, dict):
+                return (name, obj)
+        except Exception:
+            pass
+    # 3) key=value / key: value pairs, splitting on top-level commas only.
+    args: Dict[str, Any] = {}
+    depth = 0
+    buf = ""
+    parts = []
+    for ch in body:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf)
+    for part in parts:
+        m = re.match(r"\s*['\"]?([\w\-]+)['\"]?\s*[:=]\s*(.+)$", part, re.S)
+        if not m:
+            continue
+        key, val = m.group(1), m.group(2).strip().strip(",").strip()
+        low = val.lower()
+        if low in ("true", "false"):
+            args[key] = (low == "true")
+        elif low in ("none", "null"):
+            args[key] = None
+        elif re.fullmatch(r"-?\d+", val):
+            args[key] = int(val)
+        elif re.fullmatch(r"-?\d*\.\d+", val):
+            args[key] = float(val)
+        else:
+            args[key] = val.strip("'\"")
+    return (name, args) if args else (name, {})
 
 
 def _summarize_tool_results(messages: list) -> str:
@@ -61,6 +173,7 @@ class LLM:
         temperature: float = 0.7,
         system_prompt: str = "",
         timeout: float = 120.0,
+        history_turns: int = 6,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -69,7 +182,28 @@ class LLM:
         self.temperature = temperature
         self.system_prompt = system_prompt
         self.timeout = timeout
+        self.history_turns = max(0, history_turns)
+        # Rolling [user, assistant, user, assistant, ...] of plain-text
+        # turns, replayed into each request for conversational context.
+        self.history: list[dict] = []
         self._loaded = False
+
+    def add_turn(self, user_text: str, assistant_text: str) -> None:
+        """Record a completed exchange. Trims to the last history_turns."""
+        if self.history_turns <= 0:
+            return
+        u = (user_text or "").strip()
+        a = (assistant_text or "").strip()
+        if not u or not a:
+            return
+        self.history.append({"role": "user", "content": u})
+        self.history.append({"role": "assistant", "content": a})
+        max_msgs = self.history_turns * 2
+        if len(self.history) > max_msgs:
+            self.history = self.history[-max_msgs:]
+
+    def reset_history(self) -> None:
+        self.history = []
 
     def load(self) -> bool:
         try:
@@ -108,6 +242,8 @@ class LLM:
             msgs.append({"role": "system", "content": sp})
         if few_shot:
             msgs.extend(few_shot)
+        if self.history:
+            msgs.extend(self.history)
         msgs.append({"role": "user", "content": prompt})
         return msgs
 
@@ -122,6 +258,8 @@ class LLM:
             msgs.append({"role": "system", "content": sp})
         if few_shot:
             msgs.extend(few_shot)
+        if self.history:
+            msgs.extend(self.history)
         content: list[dict] = [{"type": "text", "text": prompt}]
         for b64 in images_b64:
             content.append({
@@ -298,10 +436,25 @@ class LLM:
 
             if not tool_calls:
                 content = msg.get("content") or ""
-                if content:
-                    yield (content, {})
-                yield ("", {"done": True, "eval_count": (data.get("usage") or {}).get("completion_tokens", 0)})
-                return
+                # Small models sometimes print the call as text instead of
+                # returning structured tool_calls. Recover it so the tool
+                # actually runs instead of the call being spoken aloud.
+                recovered = _parse_text_tool_call(
+                    content,
+                    {(t.get("function") or {}).get("name") for t in (tools or [])},
+                ) if tools else None
+                if recovered is None:
+                    if content:
+                        yield (content, {})
+                    yield ("", {"done": True, "eval_count": (data.get("usage") or {}).get("completion_tokens", 0)})
+                    return
+                r_name, r_args = recovered
+                tool_calls = [{
+                    "id": "text-0",
+                    "type": "function",
+                    "function": {"name": r_name, "arguments": json.dumps(r_args)},
+                }]
+                msg = {"content": None, "tool_calls": tool_calls}
 
             # Append assistant turn that requested tools, then run them.
             # Per OpenAI spec, content should be null when tool_calls is set.

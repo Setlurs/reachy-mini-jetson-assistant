@@ -24,7 +24,7 @@ import asyncio
 import json
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
@@ -53,6 +53,28 @@ class Broadcaster:
         # initial broadcast lands before any browser is connected and gets
         # dropped, leaving the Tools panel and config block empty.
         self._info: Optional[dict] = None
+        # Latest camera-list payload (local-media mode), cached like _info
+        # so a freshly-connected browser can populate its dropdown.
+        self._camera_list: Optional[dict] = None
+        self._camera_power: Optional[dict] = None
+        # Callback(int) -> bool that hot-swaps the active camera. Set by
+        # the entry point only in local-media mode; None otherwise.
+        self._camera_switch: Optional[Callable[[int], bool]] = None
+
+    def set_camera_switch(self, fn: Optional[Callable[[int], bool]]):
+        self._camera_switch = fn
+
+    @property
+    def camera_switch(self) -> Optional[Callable[[int], bool]]:
+        return self._camera_switch
+
+    def cached_camera_list(self) -> Optional[dict]:
+        with self._lock:
+            return self._camera_list
+
+    def cached_camera_power(self) -> Optional[dict]:
+        with self._lock:
+            return self._camera_power
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         self._loop = loop
@@ -88,6 +110,12 @@ class Broadcaster:
         if msg.get("type") == "info":
             with self._lock:
                 self._info = msg
+        elif msg.get("type") == "camera_list":
+            with self._lock:
+                self._camera_list = msg
+        elif msg.get("type") == "camera_power":
+            with self._lock:
+                self._camera_power = msg
         loop = self._loop
         if not loop:
             return
@@ -132,6 +160,12 @@ def create_app(broadcaster: Broadcaster) -> FastAPI:
         cached = broadcaster.cached_info()
         if cached is not None:
             q.put_nowait(cached)
+        cached_cams = broadcaster.cached_camera_list()
+        if cached_cams is not None:
+            q.put_nowait(cached_cams)
+        cached_cp = broadcaster.cached_camera_power()
+        if cached_cp is not None:
+            q.put_nowait(cached_cp)
 
         async def _sender():
             try:
@@ -149,6 +183,14 @@ def create_app(broadcaster: Broadcaster) -> FastAPI:
                         msg = json.loads(data)
                         if msg.get("type") == "ptt":
                             broadcaster.set_ptt(bool(msg.get("active", False)))
+                        elif msg.get("type") == "set_camera":
+                            fn = broadcaster.camera_switch
+                            if fn is not None:
+                                # cv2.VideoCapture open can block ~1s;
+                                # keep it off the event loop.
+                                asyncio.get_event_loop().run_in_executor(
+                                    None, fn, int(msg.get("index", 0))
+                                )
                     except (ValueError, KeyError):
                         pass
             except (WebSocketDisconnect, Exception):

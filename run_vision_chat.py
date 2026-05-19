@@ -44,6 +44,7 @@ from app.pipeline import (
 from app.reachy import (
     add_connection_args, apply_cli_overrides, build_camera, build_mic,
     kill_stale_camera_holders, connect as connect_reachy, is_wireless,
+    is_local_media,
 )
 from app.emotion import EmotionDetector
 from app.movements import MovementController
@@ -56,10 +57,26 @@ console = Console()
 def main():
     parser = argparse.ArgumentParser(description="Vision Chat")
     add_connection_args(parser)
+    parser.add_argument("--camera-device", type=int, default=None,
+                        help="Camera index (overrides config; macOS built-in is usually 0)")
+    parser.add_argument("--list-cameras", action="store_true",
+                        help="Probe and list available local camera indices, then exit")
     args = parser.parse_args()
+
+    if args.list_cameras:
+        from app.local_media import list_local_cameras
+        cams = list_local_cameras()
+        if cams:
+            for idx, w, h in cams:
+                console.print(f"  camera #{idx}: {w}x{h}")
+        else:
+            console.print("  [yellow]No cameras found[/yellow]")
+        return
 
     config = Config.load()
     apply_cli_overrides(config, args)
+    if args.camera_device is not None:
+        config.vision.camera_device = args.camera_device
 
     console.print(Panel.fit(
         "[bold cyan]Vision Chat[/bold cyan]\n"
@@ -85,7 +102,13 @@ def main():
         else:
             console.print("[red]  ✗ Camera not found! Check USB webcam.[/red]")
         return
-    if is_wireless(config):
+    if is_local_media(config):
+        console.print(
+            f"  ✓ Camera local webcam #{config.vision.camera_device} "
+            f"({config.vision.width}x{config.vision.height}, "
+            f"{config.vision.capture_fps} fps ring buffer)"
+        )
+    elif is_wireless(config):
         console.print(
             f"  ✓ Camera robot.media "
             f"({config.vision.capture_fps} fps ring buffer)"
@@ -166,6 +189,7 @@ def main():
         backend=config.llm.backend, max_tokens=config.llm.max_tokens,
         temperature=config.llm.temperature, timeout=config.llm.timeout,
         system_prompt=vision_system_prompt,
+        history_turns=config.llm.history_turns,
     )
     llm.load()
     console.print(f"  ✓ VLM ({llm.model})")
@@ -265,6 +289,8 @@ def main():
                 max_chunk_words=config.tts.max_chunk_words,
             )
             console.print()
+
+            llm.add_turn(text, full_resp)
 
             timing = f"  [dim]STT {dt_stt:.1f}s | CAM {dt_cam*1000:.0f}ms ({n_imgs} img from buf)"
             if ttft is not None:

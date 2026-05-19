@@ -42,6 +42,8 @@ llm:
     - play_emotion
     - stop_emotion
     - analyze_image
+    - set_camera_power
+    - get_time
     - web_search
     - air_quality
     - water_data

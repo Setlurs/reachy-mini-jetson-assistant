@@ -49,6 +49,7 @@ from app.pipeline import (
 from app.reachy import (
     add_connection_args, apply_cli_overrides, build_camera, build_mic,
     kill_stale_camera_holders, connect as connect_reachy, is_wireless,
+    is_local_media,
 )
 from app.emotion import EmotionDetector
 from app.movements import MovementController
@@ -123,10 +124,26 @@ def main():
     parser.add_argument("--host", default=None, help="Web server bind address")
     parser.add_argument("--port", type=int, default=None, help="Web server port")
     add_connection_args(parser)
+    parser.add_argument("--camera-device", type=int, default=None,
+                        help="Camera index (overrides config; macOS built-in is usually 0)")
+    parser.add_argument("--list-cameras", action="store_true",
+                        help="Probe and list available local camera indices, then exit")
     args = parser.parse_args()
+
+    if args.list_cameras:
+        from app.local_media import list_local_cameras
+        cams = list_local_cameras()
+        if cams:
+            for idx, w, h in cams:
+                console.print(f"  camera #{idx}: {w}x{h}")
+        else:
+            console.print("  [yellow]No cameras found[/yellow]")
+        return
 
     config = Config.load()
     apply_cli_overrides(config, args)
+    if args.camera_device is not None:
+        config.vision.camera_device = args.camera_device
     web_host = args.host or config.web.host
     web_port = args.port or config.web.port
     broadcaster = Broadcaster()
@@ -145,6 +162,21 @@ def main():
     if not is_wireless(config):
         kill_stale_camera_holders(config.vision.camera_device, console)
 
+    # Local-media: probe attached cameras once (before opening one, so the
+    # probe doesn't fight the live capture). Used for the fallback below
+    # and to populate the web UI's camera dropdown.
+    local_cams: list = []
+    if is_local_media(config):
+        from app.local_media import list_local_cameras
+        local_cams = list_local_cameras()
+        avail = [i for i, _, _ in local_cams]
+        if local_cams and config.vision.camera_device not in avail:
+            console.print(
+                f"  [yellow]camera #{config.vision.camera_device} not available; "
+                f"using #{local_cams[0][0]} (switch in the web UI)[/yellow]"
+            )
+            config.vision.camera_device = local_cams[0][0]
+
     cam = build_camera(config, console, reachy)
     if cam is None or not cam.start():
         if is_wireless(config):
@@ -152,7 +184,34 @@ def main():
         else:
             console.print("[red]  ✗ Camera not found! Check USB webcam.[/red]")
         return
-    if is_wireless(config):
+    if is_local_media(config):
+        console.print(
+            f"  ✓ Camera local webcam #{config.vision.camera_device} "
+            f"({config.vision.width}x{config.vision.height}, "
+            f"{config.vision.capture_fps} fps ring buffer)"
+        )
+
+        def _send_camera_list(current: int) -> None:
+            broadcaster.send({
+                "type": "camera_list",
+                "cameras": [
+                    {"index": i, "label": f"Camera {i} ({w}×{h})"}
+                    for i, w, h in local_cams
+                ],
+                "current": current,
+            })
+
+        def _switch_camera(index: int) -> bool:
+            ok = cam.switch_device(index) if hasattr(cam, "switch_device") else False
+            if ok:
+                config.vision.camera_device = index
+                console.print(f"  [cyan]Camera switched to #{index}[/cyan]")
+            _send_camera_list(config.vision.camera_device)
+            return ok
+
+        broadcaster.set_camera_switch(_switch_camera)
+        _send_camera_list(config.vision.camera_device)
+    elif is_wireless(config):
         console.print(
             f"  ✓ Camera robot.media "
             f"({config.vision.capture_fps} fps ring buffer)"
@@ -266,6 +325,14 @@ def main():
                 "the matching tool yourself — never invent visual details, "
                 "weather, or facts you would otherwise need a tool for. Use "
                 "your own knowledge only when no tool is appropriate.\n"
+                "For anything about current events, news, sports scores, "
+                "prices, weather, or the date/time, you MUST call the "
+                "matching tool (e.g. web_search, get_time) every time it is "
+                "asked, including follow-up questions. Never reply that you "
+                "lack access to real-time information, the internet, sports "
+                "scores, or the current date/time — call the tool instead. "
+                "Do not refuse a request you answered with a tool earlier "
+                "just because you see a similar earlier reply.\n"
                 "Tools:\n"
                 + "\n".join(_tool_lines)
                 + "\n\n"
@@ -276,6 +343,7 @@ def main():
         backend=config.llm.backend, max_tokens=config.llm.max_tokens,
         temperature=config.llm.temperature, timeout=config.llm.timeout,
         system_prompt=vision_system_prompt,
+        history_turns=config.llm.history_turns,
     )
     llm.load()
     console.print(f"  ✓ VLM ({llm.model})")
@@ -338,7 +406,9 @@ def main():
     # mDNS — no token, no URL config needed. The satellite owns its own
     # ReachyMini SDK instance; in wireless mode the daemon's WebRTC
     # stream supports both subscribers in parallel.
-    if config.ha.enabled:
+    if config.ha.enabled and is_local_media(config):
+        console.print("  [dim]HA satellite skipped (--local-media: no robot daemon)[/dim]")
+    elif config.ha.enabled:
         if not is_satellite_installed():
             console.print(
                 "  [yellow]⚠ HA satellite enabled but reachy_mini_home_assistant "
@@ -648,6 +718,8 @@ def main():
                 tts_thread.join()
 
             console.print()
+
+            llm.add_turn(text, full_resp)
 
             toks = len(full_resp.split())
             timing = f"  [dim]STT {dt_stt:.1f}s | CAM {dt_cam*1000:.0f}ms ({n_imgs} img from buf)"

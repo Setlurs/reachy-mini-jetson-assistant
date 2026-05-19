@@ -131,8 +131,21 @@ def _resolve_connection_mode(rcfg) -> Tuple[str, str, bool]:
     return "webrtc", "network", False
 
 
+def is_local_media(config) -> bool:
+    """True when --local-media is active: use the host laptop's own
+    camera / mic / speakers and bypass the robot entirely."""
+    return bool(getattr(config.reachy, "local_media", False))
+
+
 def is_wireless(config) -> bool:
-    """Used by entry points to pick local vs robot-media camera + mic."""
+    """Used by entry points to pick local vs robot-media camera + mic.
+
+    Local-media mode is never "wireless" — it short-circuits the robot
+    so entry points that gate robot connection on is_wireless() stay
+    correct without needing to know about local_media.
+    """
+    if is_local_media(config):
+        return False
     return bool(getattr(config.reachy, "wireless", False))
 
 
@@ -142,10 +155,28 @@ def apply_cli_overrides(config, args) -> None:
     Both flags are tri-state via argparse (default None = keep config). This
     keeps the YAML defaults usable while CLI flags can flip them at runtime.
     """
+    if getattr(args, "local_media", None) is not None:
+        config.reachy.local_media = bool(args.local_media)
     if getattr(args, "wireless", None) is not None:
         config.reachy.wireless = bool(args.wireless)
     if getattr(args, "on_device", None) is not None:
         config.reachy.on_device = bool(args.on_device)
+
+    # Local-media implies no robot at all: don't try to connect a daemon
+    # and don't treat the (config-default) wireless flag as active.
+    if config.reachy.local_media:
+        config.reachy.enabled = False
+        config.reachy.wireless = False
+        # The default VAD RMS gates are tuned for the Reachy Mini's
+        # close, hot microphone. A laptop's built-in mic at desk
+        # distance is quieter, so genuine speech (~0.018-0.025 RMS)
+        # falls under min_utterance_rms / speech_threshold and gets
+        # discarded as "(noise: …)". Relax those energy gates only in
+        # local-media mode — Silero (silero_threshold) stays the real
+        # speech detector, so noise rejection quality is unaffected.
+        # Only lower them; never raise a user's stricter setting.
+        config.vad.min_utterance_rms = min(config.vad.min_utterance_rms, 0.008)
+        config.vad.speech_threshold = min(config.vad.speech_threshold, 0.008)
 
 
 def add_connection_args(parser) -> None:
@@ -156,6 +187,11 @@ def add_connection_args(parser) -> None:
     None so we can tell "user didn't pass it" from "user said False".
     """
     g = parser.add_argument_group("Reachy Mini connection")
+    l = g.add_mutually_exclusive_group()
+    l.add_argument("--local-media", dest="local_media", action="store_true", default=None,
+                   help="Use this machine's own camera/mic/speakers; skip the robot entirely")
+    l.add_argument("--no-local-media", dest="local_media", action="store_false",
+                   help="Use the Reachy Mini robot for media (default)")
     w = g.add_mutually_exclusive_group()
     w.add_argument("--wireless", dest="wireless", action="store_true", default=None,
                    help="Use Reachy Mini Wireless (CM4) — media via WebRTC/GStreamer")
@@ -177,6 +213,17 @@ def build_camera(config, console, robot):
     started) camera, or None if camera support is unavailable.
     """
     from app.camera import Camera, RobotCamera
+
+    if is_local_media(config):
+        from app.local_media import LocalCamera
+
+        return LocalCamera(
+            device=config.vision.camera_device,
+            width=config.vision.width,
+            height=config.vision.height,
+            jpeg_quality=config.vision.jpeg_quality,
+            capture_fps=config.vision.capture_fps,
+        )
 
     if is_wireless(config):
         if robot is None:
@@ -211,6 +258,11 @@ def build_mic(config, console, robot, chunk_ms: int):
     """
     from app.audio import find_alsa_device
     from app.pipeline import MicRecorder, RobotMicRecorder
+
+    if is_local_media(config):
+        from app.local_media import LocalMicRecorder
+
+        return LocalMicRecorder(console, chunk_ms=chunk_ms), None, None
 
     if is_wireless(config):
         if robot is None:

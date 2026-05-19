@@ -94,6 +94,7 @@ def main():
         backend=config.llm.backend, max_tokens=config.llm.max_tokens,
         temperature=config.llm.temperature, timeout=config.llm.timeout,
         system_prompt=active_system_prompt,
+        history_turns=config.llm.history_turns,
     )
     llm.load()
     console.print(f"  ✓ LLM ({llm.model})")
@@ -183,6 +184,10 @@ def main():
                 max_chunk_words=config.tts.max_chunk_words,
             )
             console.print()
+
+            # Store the raw utterance (not the RAG-augmented prompt) so
+            # follow-ups have clean conversational context.
+            llm.add_turn(text, full_resp)
 
             timing = f"  [dim]STT {dt_stt:.1f}s"
             if rag:
