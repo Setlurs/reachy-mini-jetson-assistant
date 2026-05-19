@@ -893,6 +893,14 @@ def main():
                 mic.resume()
                 continue
 
+            # Status question while listening — answer deterministically
+            # instead of relying on the model to call mic_status.
+            if mic_status_query(text):
+                _say("Yes, the microphone is on and I am listening.")
+                broadcaster.send({"type": "status", "stage": _idle_status()})
+                mic.resume()
+                continue
+
             # ── Deterministic camera on/off intercept ────────────
             # Small models inconsistently emit set_camera_power for
             # "turn off the camera" (they narrate instead). For

@@ -34,7 +34,8 @@ def mic_status_query(text: str) -> bool:
         or re.search(r"\bare you (still )?listening\b", t)
         or re.search(r"\bmuted right now\b", t)
         or re.search(r"\bcan you hear me\b", t)
-        or re.search(r"\b(what'?s|what is) your (mic|microphone|mute) (status|state)\b", t)
+        or re.search(r"\b(mic|microphone|mute) (status|state)\b", t)
+        or re.search(r"\bstatus of (the |your )?(mic|microphone)\b", t)
     )
 
 
