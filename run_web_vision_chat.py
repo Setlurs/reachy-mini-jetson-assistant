@@ -57,6 +57,7 @@ from app.web import Broadcaster, start_web_server
 from app.tools import (
     ToolDependencies, dispatch_tool_call, get_tool_specs, get_tools_info,
 )
+from app.tools.camera_power import camera_power_intent
 from app.ha_satellite import HASatellite, is_satellite_installed
 from app.wake_word import try_create_detector as create_wake_word_detector
 from rich.console import Console
@@ -646,6 +647,47 @@ def main():
                 "duration": round(segment.duration, 1),
                 "emotion": emo.emotion.value if emotion_detector else None,
             })
+
+            # ── Deterministic camera on/off intercept ────────────
+            # Small models inconsistently emit set_camera_power for
+            # "turn off the camera" (they narrate instead). For
+            # unambiguous power commands, call the tool directly and
+            # skip the LLM entirely so it always works.
+            cam_intent = (
+                camera_power_intent(text)
+                if config.llm.tools_enabled else None
+            )
+            if cam_intent is not None:
+                import asyncio
+                _loop = asyncio.new_event_loop()
+                try:
+                    result = _loop.run_until_complete(
+                        _tool_dispatcher("set_camera_power", {"on": cam_intent})
+                    )
+                finally:
+                    _loop.close()
+                _emit_tool_call("set_camera_power", {"on": cam_intent}, result)
+                msg = result.get("message") or (
+                    "Camera turned on." if cam_intent else "Camera turned off."
+                )
+                broadcaster.send({"type": "status", "stage": "speaking"})
+                broadcaster.send({"type": "token", "text": msg})
+                console.print(f"  [magenta]Assistant:[/magenta] {msg}")
+                if tts:
+                    q = queue.Queue()
+                    th = threading.Thread(
+                        target=tts_player, args=(tts, q, mic.pa_sink), daemon=True,
+                    )
+                    th.start()
+                    q.put(clean_text_for_speech(msg))
+                    q.put(None)
+                    th.join()
+                llm.add_turn(text, msg)
+                broadcaster.send({"type": "done", "ttft": None,
+                                  "vlm_time": 0, "tokens": len(msg.split())})
+                broadcaster.send({"type": "status", "stage": "listening"})
+                mic.resume()
+                continue
 
             # ── VLM streaming with TTS + WebSocket broadcast ─────
             broadcaster.send({"type": "status", "stage": "thinking"})
