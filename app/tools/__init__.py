@@ -24,6 +24,7 @@ from app.tools import (  # noqa: F401
     analyze_image,
     camera_power,
     mic_status,
+    play_video,
     get_time,
     web_search,
     air_quality,

@@ -59,6 +59,9 @@ from app.tools import (
 )
 from app.tools.camera_power import camera_power_intent
 from app.tools.mic_status import mic_command_intent, mic_status_query
+from app.tools.play_video import (
+    register_videos, video_command_intent, resolve_clip,
+)
 from app.ha_satellite import HASatellite, is_satellite_installed
 from app.wake_word import try_create_detector as create_wake_word_detector
 from rich.console import Console
@@ -144,6 +147,7 @@ def main():
 
     config = Config.load()
     apply_cli_overrides(config, args)
+    register_videos(config.videos.clips)
     if args.camera_device is not None:
         config.vision.camera_device = args.camera_device
     web_host = args.host or config.web.host
@@ -897,6 +901,32 @@ def main():
             # instead of relying on the model to call mic_status.
             if mic_status_query(text):
                 _say("Yes, the microphone is on and I am listening.")
+                broadcaster.send({"type": "status", "stage": _idle_status()})
+                mic.resume()
+                continue
+
+            # ── Deterministic video intercept ────────────────────
+            # "play school video" / "advance" / "rewind" / "pause" /
+            # "stop video" — drive the on-screen player without the LLM.
+            _vid = video_command_intent(text, list(config.videos.clips))
+            if _vid is not None:
+                if _vid["action"] == "play":
+                    clip = resolve_clip(_vid["name"])
+                    if clip is None:
+                        _say(f"I don't have a {_vid['name']} video.")
+                    else:
+                        broadcaster.send({
+                            "type": "video", "action": "play",
+                            "video_id": clip["video_id"],
+                            "start": clip["start"], "name": clip["name"],
+                        })
+                        _say(f"Playing the {clip['name']} video.")
+                else:
+                    out = {"type": "video", "action": _vid["action"]}
+                    if "seconds" in _vid:
+                        out["seconds"] = _vid["seconds"]
+                    broadcaster.send(out)
+                    console.print(f"  [magenta]Assistant:[/magenta] (video {_vid['action']})")
                 broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()
                 continue

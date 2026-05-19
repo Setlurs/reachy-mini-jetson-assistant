@@ -62,8 +62,10 @@ header{display:flex;align-items:center;justify-content:space-between;
 .right{flex:1;display:flex;flex-direction:column;padding:10px;gap:10px;overflow:hidden}
 /* Conversation 2/3, map 1/3 — flex grows partition the right column */
 .right > .conv-panel{flex:2;min-height:0}
-.right > .map-panel{flex:1;min-height:0;display:flex;flex-direction:column}
-.map-wrap{flex:1;min-height:0;background:#0a0e14}
+.right > .map-panel{flex:1.4;min-height:0;display:flex;flex-direction:column}
+.media-row{flex:1;min-height:0;display:flex;gap:8px}
+.map-wrap{flex:1;min-width:0;min-height:0;background:#0a0e14}
+#configPanel{max-height:20vh;overflow-y:auto}
 .map-wrap .leaflet-container{width:100%;height:100%;background:#0a0e14}
 .map-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:.8rem;text-align:center;padding:12px}
 .map-values{display:flex;gap:8px;flex-wrap:wrap;padding:6px 12px;font-size:.7rem;color:var(--dim);border-top:1px solid var(--border)}
@@ -286,8 +288,16 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
         <span id="mapTitle">Map</span>
         <span style="font-size:.7rem;color:var(--dim)" id="mapHint">no location data yet</span>
       </div>
-      <div class="map-wrap" id="mapWrap">
-        <div class="map-empty" id="mapEmpty">Ask about air quality, river data, or wildfires to see a map here.</div>
+      <div class="media-row" id="mediaRow">
+        <div class="map-wrap" id="mapWrap">
+          <div class="map-empty" id="mapEmpty">Ask about air quality, river data, or wildfires to see a map here.</div>
+        </div>
+        <div class="map-wrap" id="videoWrap" style="display:none;position:relative">
+          <div id="ytplayer" style="width:100%;height:100%"></div>
+          <div id="videoUnlock" style="display:none;position:absolute;left:0;right:0;bottom:0;align-items:center;justify-content:center;padding:10px;background:linear-gradient(transparent,rgba(0,0,0,.7));cursor:pointer;z-index:5">
+            <span style="background:#1a4a6e;border:1px solid #58a6ff;color:#fff;border-radius:8px;padding:10px 20px;font-size:.95rem">🔊 Tap for sound</span>
+          </div>
+        </div>
       </div>
       <div class="map-values" id="mapValues" style="display:none"></div>
     </div>
@@ -374,6 +384,7 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
         case 'tts_state': onTtsState(msg); break;
         case 'tool_call': onToolCall(msg); break;
         case 'map_card': onMapCard(msg); break;
+        case 'video': if(window.videoControl) window.videoControl(msg); break;
         case 'camera_list': onCameraList(msg); break;
         case 'camera_power': onCameraPower(msg); break;
       }
@@ -560,6 +571,12 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
   let mapInst = null;
   let mapMarkers = [];
 
+  // Let the (separate) video script tell Leaflet to re-measure when the
+  // map's width changes because the video panel opened/closed beside it.
+  window.refreshMap = function(){
+    if(mapInst) setTimeout(() => mapInst.invalidateSize(), 60);
+  };
+
   function ensureMap(){
     if(mapInst) return mapInst;
     const empty = $('mapEmpty');
@@ -731,6 +748,98 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
 
   /* ── Boot ─────────────────────────── */
   connect();
+})();
+</script>
+
+<!-- YouTube IFrame Player API: on-screen how-to videos, voice-controlled -->
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+(function(){
+  var player = null, ready = false, pending = null;
+  var $ = function(id){ return document.getElementById(id); };
+
+  var soundOn = false;         // has the user enabled sound this session?
+  var lastMsg = null;          // most recent play request
+
+  // Browsers always allow *muted* autoplay, so the video starts with
+  // zero interaction (kiosk-friendly). The first click/keypress
+  // anywhere unmutes it and stays unmuted for the session.
+  function enableSound(){
+    if(soundOn) return;
+    soundOn = true;
+    var ov = $('videoUnlock');
+    if(ov) ov.style.display = 'none';
+    try { if(player){ player.unMute(); player.setVolume(100); } } catch(e) {}
+  }
+  document.addEventListener('click', enableSound, true);
+  document.addEventListener('keydown', enableSound, true);
+
+  window.onYouTubeIframeAPIReady = function(){
+    player = new YT.Player('ytplayer', {
+      width: '100%', height: '100%',
+      playerVars: { rel: 0, modestbranding: 1, playsinline: 1, autoplay: 1 },
+      events: {
+        onReady: function(){
+          ready = true;
+          if(pending){ var p = pending; pending = null; cue(p); }
+        },
+        onStateChange: function(e){
+          // While playing muted, show the "tap for sound" overlay until
+          // the user enables audio.
+          var ov = $('videoUnlock');
+          if(!ov) return;
+          if(e.data === YT.PlayerState.PLAYING && !soundOn){
+            ov.style.display = 'flex';
+          } else {
+            ov.style.display = 'none';
+          }
+        }
+      }
+    });
+  };
+
+  function showVideo(on){
+    // Map stays visible; the video panel opens *beside* it (side by
+    // side) rather than replacing it. Leaflet is told to re-measure
+    // since its width changed.
+    var vw = $('videoWrap'), mt = $('mapTitle');
+    if(vw) vw.style.display = on ? '' : 'none';
+    if(mt) mt.textContent = on ? 'Map + Video' : 'Map';
+    if(window.refreshMap) window.refreshMap();
+  }
+
+  function cue(msg){
+    lastMsg = msg;
+    showVideo(true);
+    // Start muted so autoplay is always allowed; unmute immediately if
+    // the user already enabled sound this session.
+    try { soundOn ? player.unMute() : player.mute(); } catch(e) {}
+    player.loadVideoById({ videoId: msg.video_id, startSeconds: msg.start || 0 });
+    try { player.playVideo(); } catch(e) {}
+  }
+
+  window.videoControl = function(msg){
+    var a = msg.action;
+    if(a === 'play'){
+      lastMsg = msg;
+      if(!ready || !player){ pending = msg; showVideo(true); return; }
+      cue(msg);
+      return;
+    }
+    if(!player || !ready) return;
+    if(a === 'forward'){
+      player.seekTo(player.getCurrentTime() + (msg.seconds || 10), true);
+    } else if(a === 'back'){
+      player.seekTo(Math.max(0, player.getCurrentTime() - (msg.seconds || 10)), true);
+    } else if(a === 'pause'){
+      player.pauseVideo();
+    } else if(a === 'resume'){
+      player.playVideo();
+    } else if(a === 'stop'){
+      player.stopVideo();
+      showVideo(false);
+    }
+  };
 })();
 </script>
 </body>

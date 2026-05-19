@@ -208,9 +208,22 @@ class MicConfig:
     debug: bool = False
 
 
+@dataclass
+class VideoConfig:
+    """Named YouTube clips playable in the web UI's panel.
+
+    "play <name> video" looks up <name> here. Add entries in
+    settings.yaml under videos.clips to support more videos later.
+    """
+    clips: Dict[str, str] = field(default_factory=lambda: {
+        "school": "https://www.youtube.com/watch?v=-ypDeOdfB-M&t=20s",
+    })
+
+
 _SECTIONS = [
     ("llm", "llm", LLMConfig),
     ("mic", "mic", MicConfig),
+    ("videos", "videos", VideoConfig),
     ("stt", "stt", STTConfig),
     ("tts", "tts", TTSConfig),
     ("audio", "audio", AudioConfig),
@@ -228,6 +241,7 @@ _SECTIONS = [
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     mic: MicConfig = field(default_factory=MicConfig)
+    videos: VideoConfig = field(default_factory=VideoConfig)
     stt: STTConfig = field(default_factory=STTConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)

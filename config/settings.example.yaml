@@ -44,6 +44,7 @@ llm:
     - analyze_image
     - set_camera_power
     - mic_status
+    - play_video
     - get_time
     - web_search
     - air_quality
