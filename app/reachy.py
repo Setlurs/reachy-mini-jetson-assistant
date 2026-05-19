@@ -161,6 +161,10 @@ def apply_cli_overrides(config, args) -> None:
         config.reachy.wireless = bool(args.wireless)
     if getattr(args, "on_device", None) is not None:
         config.reachy.on_device = bool(args.on_device)
+    if getattr(args, "robot_host", None):
+        config.reachy.host = args.robot_host
+    if getattr(args, "robot_port", None):
+        config.reachy.port = args.robot_port
 
     # Local-media implies no robot at all: don't try to connect a daemon
     # and don't treat the (config-default) wireless flag as active.
@@ -202,6 +206,11 @@ def add_connection_args(parser) -> None:
                    help="App is running on the robot itself — use GStreamer instead of WebRTC")
     o.add_argument("--off-device", dest="on_device", action="store_false",
                    help="App is on a separate host — use WebRTC (default for --wireless)")
+    g.add_argument("--robot-host", dest="robot_host", default=None,
+                   help="Robot host/IP for wireless mode (e.g. 192.168.1.50). "
+                        "Use the IP to bypass flaky reachy-mini.local mDNS.")
+    g.add_argument("--robot-port", dest="robot_port", type=int, default=None,
+                   help="Robot daemon port (default 8000)")
 
 
 def build_camera(config, console, robot):
@@ -316,6 +325,8 @@ def connect(config, console: Console) -> Optional["ReachyMini"]:
                 console.print("  Retrying connection (fresh daemon)...")
 
             reachy = ReachyMini(
+                host=getattr(rcfg, "host", "reachy-mini.local"),
+                port=getattr(rcfg, "port", 8000),
                 spawn_daemon=spawn_daemon,
                 use_sim=False,
                 timeout=rcfg.timeout,

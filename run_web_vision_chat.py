@@ -333,6 +333,10 @@ def main():
                 "scores, or the current date/time — call the tool instead. "
                 "Do not refuse a request you answered with a tool earlier "
                 "just because you see a similar earlier reply.\n"
+                "To enable or disable the camera you MUST call "
+                "set_camera_power (on=true to turn on, on=false to turn "
+                "off) — turning it back on requires the call, so never "
+                "just say it is on/off without calling the tool.\n"
                 "Tools:\n"
                 + "\n".join(_tool_lines)
                 + "\n\n"

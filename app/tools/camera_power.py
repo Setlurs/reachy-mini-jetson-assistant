@@ -20,13 +20,15 @@ class SetCameraPower(Tool):
 
     name = "set_camera_power"
     description = (
-        "Turn the camera on or off. Turning it off releases the camera "
-        "(its light turns off) and you can no longer see — vision/'what "
-        "do you see' requests will not work until it is turned back on. "
-        "Use when the user asks to disable/enable, mute/unmute, or cover "
-        "the camera, or asks for privacy."
+        "Turn the camera on (on=true) or off (on=false). You MUST call "
+        "this tool for BOTH directions — to enable/turn on/resume the "
+        "camera AND to disable/turn off/mute/cover it. Turning a camera "
+        "back ON only happens by calling this tool with on=true; never "
+        "just say the camera is on without calling it. Off releases the "
+        "camera (light off) so vision requests fail until on=true. Use "
+        "for any enable/disable, mute/unmute, cover, or privacy request."
     )
-    example = "Turn off the camera."
+    example = "Turn the camera back on."
     parameters_schema = {
         "type": "object",
         "properties": {

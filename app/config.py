@@ -128,6 +128,11 @@ class ReachyConfig:
     # developing on a laptop without a Reachy Mini or the GStreamer/WebRTC
     # media proxy. Set by the --local-media CLI flag.
     local_media: bool = False
+    # Robot host the SDK connects to (wireless/network mode). Default is
+    # the mDNS name; set to the robot's IP (e.g. "192.168.1.50") to
+    # bypass flaky .local resolution on unstable wifi.
+    host: str = "reachy-mini.local"
+    port: int = 8000
     spawn_daemon: bool = False
     timeout: float = 30.0
     media_backend: str = "no_media"     # only used when wireless=False
