@@ -58,6 +58,7 @@ from app.tools import (
     ToolDependencies, dispatch_tool_call, get_tool_specs, get_tools_info,
 )
 from app.tools.camera_power import camera_power_intent
+from app.tools.move_head import move_head_intent
 from app.tools.mic_status import mic_command_intent, mic_status_query
 from app.tools.play_video import (
     register_videos, video_command_intent, resolve_clip,
@@ -927,6 +928,29 @@ def main():
                         out["seconds"] = _vid["seconds"]
                     broadcaster.send(out)
                     console.print(f"  [magenta]Assistant:[/magenta] (video {_vid['action']})")
+                broadcaster.send({"type": "status", "stage": _idle_status()})
+                mic.resume()
+                continue
+
+            # ── Deterministic head-move intercept ────────────────
+            # "move left" / "look right" / "head up" — call move_head
+            # directly so it works every time even when the LLM would
+            # otherwise just narrate "looking left".
+            _dir = move_head_intent(text)
+            if _dir is not None and config.llm.tools_enabled:
+                import asyncio
+                _loop = asyncio.new_event_loop()
+                try:
+                    result = _loop.run_until_complete(
+                        _tool_dispatcher("move_head", {"direction": _dir})
+                    )
+                finally:
+                    _loop.close()
+                _emit_tool_call("move_head", {"direction": _dir}, result)
+                msg = result.get("status") or f"looking {_dir}"
+                msg = msg if msg.endswith(".") else msg + "."
+                _say(msg.capitalize())
+                llm.add_turn(text, msg)
                 broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()
                 continue

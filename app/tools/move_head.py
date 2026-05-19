@@ -2,10 +2,43 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, Tuple
+import re
+from typing import Any, Dict, Optional, Tuple
 
 from app.tools.core_tools import Tool, ToolDependencies
 from app.movements import _head_pose
+
+
+# Action verbs and directional tokens for the deterministic intercept.
+_ACTION = (
+    r"\b(move|look|turn|face|tilt|point|head|gaze|aim|peer|swivel|"
+    r"glance|rotate)\b"
+)
+_DIR_MAP = {
+    "left": "left", "right": "right",
+    "up": "up", "upward": "up", "upwards": "up", "above": "up",
+    "down": "down", "downward": "down", "downwards": "down", "below": "down",
+    "front": "front", "forward": "front", "forwards": "front",
+    "ahead": "front", "center": "front", "centre": "front",
+    "straight": "front", "neutral": "front",
+}
+_DIR_RE = r"\b(" + "|".join(map(re.escape, _DIR_MAP.keys())) + r")\b"
+
+
+def move_head_intent(text: str) -> Optional[str]:
+    """Detect a head-direction command. Returns left/right/up/down/front
+    or None. Conservative: requires both an action verb and a direction
+    so ordinary sentences containing "left" don't move the head.
+    """
+    t = re.sub(r"[^\w\s]", " ", (text or "").lower()).strip()
+    if not t:
+        return None
+    if not re.search(_ACTION, t):
+        return None
+    m = re.search(_DIR_RE, t)
+    if not m:
+        return None
+    return _DIR_MAP[m.group(1)]
 
 
 logger = logging.getLogger(__name__)
