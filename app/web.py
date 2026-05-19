@@ -49,6 +49,10 @@ class Broadcaster:
         self._lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._ptt = threading.Event()
+        # Speaker voiceback (TTS). Enabled by default; the web UI can turn
+        # it off (e.g. for typed queries where the answer is on screen).
+        self._tts_enabled = threading.Event()
+        self._tts_enabled.set()
         # Typed queries from the web UI text box, drained by the pipeline
         # worker exactly like a transcribed utterance.
         self._text_queries: "queue.Queue[str]" = queue.Queue()
@@ -110,6 +114,17 @@ class Broadcaster:
     @property
     def ptt_active(self) -> bool:
         return self._ptt.is_set()
+
+    @property
+    def tts_enabled(self) -> bool:
+        return self._tts_enabled.is_set()
+
+    def set_tts_enabled(self, enabled: bool):
+        if enabled:
+            self._tts_enabled.set()
+        else:
+            self._tts_enabled.clear()
+        self.send({"type": "tts_state", "enabled": enabled})
 
     def set_ptt(self, active: bool):
         if active:
@@ -178,6 +193,7 @@ def create_app(broadcaster: Broadcaster) -> FastAPI:
         broadcaster.register(q)
 
         q.put_nowait({"type": "ptt_state", "active": broadcaster.ptt_active})
+        q.put_nowait({"type": "tts_state", "enabled": broadcaster.tts_enabled})
         cached = broadcaster.cached_info()
         if cached is not None:
             q.put_nowait(cached)
@@ -206,6 +222,10 @@ def create_app(broadcaster: Broadcaster) -> FastAPI:
                             broadcaster.set_ptt(bool(msg.get("active", False)))
                         elif msg.get("type") == "text_query":
                             broadcaster.submit_text_query(msg.get("text", ""))
+                        elif msg.get("type") == "tts_enabled":
+                            broadcaster.set_tts_enabled(
+                                bool(msg.get("enabled", True))
+                            )
                         elif msg.get("type") == "set_camera":
                             fn = broadcaster.camera_switch
                             if fn is not None:

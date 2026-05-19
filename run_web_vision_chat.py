@@ -561,12 +561,17 @@ def main():
         shows 'Waiting for speech…' while actually muted."""
         return "listening" if broadcaster.ptt_active else "muted"
 
+    def _tts_on() -> bool:
+        """True only if TTS exists and the web UI hasn't muted the
+        speaker. Text/console/WebSocket output is unaffected."""
+        return bool(tts) and broadcaster.tts_enabled
+
     def _say(msg: str) -> None:
         """Speak a short canned line + mirror it to the web UI."""
         broadcaster.send({"type": "status", "stage": "speaking"})
         broadcaster.send({"type": "token", "text": msg})
         console.print(f"  [magenta]Assistant:[/magenta] {msg}")
-        if tts:
+        if _tts_on():
             _q: queue.Queue = queue.Queue()
             _t = threading.Thread(
                 target=tts_player, args=(tts, _q, mic.pa_sink), daemon=True,
@@ -595,7 +600,7 @@ def main():
 
         tts_q = None
         tts_thread = None
-        if tts:
+        if _tts_on():
             tts_q = queue.Queue()
             tts_thread = threading.Thread(
                 target=tts_player, args=(tts, tts_q, mic.pa_sink), daemon=True,
@@ -913,7 +918,7 @@ def main():
                 broadcaster.send({"type": "status", "stage": "speaking"})
                 broadcaster.send({"type": "token", "text": msg})
                 console.print(f"  [magenta]Assistant:[/magenta] {msg}")
-                if tts:
+                if _tts_on():
                     q = queue.Queue()
                     th = threading.Thread(
                         target=tts_player, args=(tts, q, mic.pa_sink), daemon=True,

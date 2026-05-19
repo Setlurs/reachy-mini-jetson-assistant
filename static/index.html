@@ -96,7 +96,7 @@ header{display:flex;align-items:center;justify-content:space-between;
   transition:all .3s;white-space:nowrap}
 .stage.active{background:var(--accent-dim);color:var(--accent);font-weight:600}
 .pipe-status{padding:4px 12px 8px;font-size:.75rem;color:var(--dim);text-align:center}
-.ptt-wrap{display:flex;justify-content:center;padding:8px 12px 12px}
+.ptt-wrap{display:flex;justify-content:center;gap:8px;padding:8px 12px 12px}
 .ptt-btn{display:flex;align-items:center;gap:6px;padding:8px 18px;border-radius:6px;
   border:1px solid;cursor:pointer;font-size:.8rem;font-weight:600;font-family:inherit;
   transition:all .2s;outline:none;letter-spacing:.3px}
@@ -211,6 +211,10 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
           <button class="ptt-btn muted" id="pttBtn" title="Toggle microphone">
             <svg id="micIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/><line id="micSlash" x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="2.5"/></svg>
             <span id="pttLabel">Unmute</span>
+          </button>
+          <button class="ptt-btn live" id="ttsBtn" title="Toggle speaker voiceback">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 010 7"/><path d="M19 5a9 9 0 010 14"/><line id="spkSlash" x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="2.5" style="display:none"/></svg>
+            <span id="ttsLabel">Speaker On</span>
           </button>
         </div>
       </div>
@@ -332,6 +336,7 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
   let currentAssistant = null;
   let reconnectTimer = null;
   let pttActive = false;
+  let ttsActive = true;
 
   /* ── WebSocket ────────────────────── */
   function connect(){
@@ -366,6 +371,7 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
         case 'robot':    onRobot(msg); break;
         case 'info':     onInfo(msg); break;
         case 'ptt_state': onPttState(msg); break;
+        case 'tts_state': onTtsState(msg); break;
         case 'tool_call': onToolCall(msg); break;
         case 'map_card': onMapCard(msg); break;
         case 'camera_list': onCameraList(msg); break;
@@ -686,6 +692,26 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
   $('textSend').addEventListener('click', sendTextQuery);
   $('textQuery').addEventListener('keydown', function(e){
     if(e.key === 'Enter'){ e.preventDefault(); sendTextQuery(); }
+  });
+
+  function onTtsState(msg){
+    ttsActive = !!msg.enabled;
+    const btn = $('ttsBtn');
+    const lbl = $('ttsLabel');
+    const slash = $('spkSlash');
+    if(ttsActive){
+      btn.className = 'ptt-btn live';
+      lbl.textContent = 'Speaker On';
+      slash.style.display = 'none';
+    } else {
+      btn.className = 'ptt-btn muted';
+      lbl.textContent = 'Speaker Off';
+      slash.style.display = '';
+    }
+  }
+  $('ttsBtn').addEventListener('click', function(){
+    if(!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({type:'tts_enabled', enabled: !ttsActive}));
   });
 
   /* ── Helpers ──────────────────────── */
