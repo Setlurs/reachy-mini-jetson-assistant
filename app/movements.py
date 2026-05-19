@@ -64,6 +64,18 @@ class MovementController:
         self._thread: Optional[threading.Thread] = None
         self._last_emotion: Optional[Emotion] = None
         self._last_react_time: float = 0.0
+        # When True, emotion-driven reactions skip — keeps the head
+        # where the user explicitly aimed it instead of snapping back
+        # to neutral on every utterance. Set by move_head, cleared
+        # when the user faces forward again.
+        self._manual_head: bool = False
+
+    @property
+    def manual_head(self) -> bool:
+        return self._manual_head
+
+    def set_manual_head(self, on: bool) -> None:
+        self._manual_head = bool(on)
 
     def react(self, emotion: Emotion, confidence: float = 1.0) -> bool:
         """Trigger a movement sequence for the given emotion (non-blocking).
@@ -73,6 +85,11 @@ class MovementController:
         cooldown, or no reachy connected.
         """
         if self._reachy is None:
+            return False
+
+        # Respect a user-set head position: skip emotion reactions so
+        # "move left" stays put across subsequent turns.
+        if self._manual_head:
             return False
 
         if emotion == Emotion.NEUTRAL:

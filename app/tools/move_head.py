@@ -96,5 +96,12 @@ class MoveHead(Tool):
             logger.exception("move_head failed")
             return {"error": str(e)}
 
+        # Engage / release the manual-head override so emotion reactions
+        # don't snap the head back to neutral on the next utterance.
+        # "front" returns to autonomous reactive behavior.
+        mc = getattr(deps, "movement_controller", None)
+        if mc is not None and hasattr(mc, "set_manual_head"):
+            mc.set_manual_head(direction != "front")
+
         logger.info("Tool call: move_head direction=%s", direction)
         return {"status": f"looking {direction}"}

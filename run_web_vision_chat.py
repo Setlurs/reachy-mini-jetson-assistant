@@ -59,6 +59,7 @@ from app.tools import (
 )
 from app.tools.camera_power import camera_power_intent
 from app.tools.move_head import move_head_intent
+from app.tools.analyze_image import analyze_image_intent
 from app.tools.mic_status import mic_command_intent, mic_status_query
 from app.tools.play_video import (
     register_videos, video_command_intent, resolve_clip,
@@ -950,6 +951,30 @@ def main():
                 msg = result.get("status") or f"looking {_dir}"
                 msg = msg if msg.endswith(".") else msg + "."
                 _say(msg.capitalize())
+                llm.add_turn(text, msg)
+                broadcaster.send({"type": "status", "stage": _idle_status()})
+                mic.resume()
+                continue
+
+            # ── Deterministic vision-question intercept ──────────
+            # "what do you see" / "describe the room" — call
+            # analyze_image directly with a fresh frame so the tool
+            # actually runs (the LLM otherwise sometimes narrates a
+            # stale description from history).
+            if analyze_image_intent(text) and config.llm.tools_enabled:
+                import asyncio
+                _loop = asyncio.new_event_loop()
+                try:
+                    result = _loop.run_until_complete(
+                        _tool_dispatcher("analyze_image", {"question": text})
+                    )
+                finally:
+                    _loop.close()
+                _emit_tool_call("analyze_image", {"question": text}, result)
+                msg = (result.get("description")
+                       or result.get("error")
+                       or "I couldn't get a picture.")
+                _say(msg)
                 llm.add_turn(text, msg)
                 broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()

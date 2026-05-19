@@ -8,6 +8,7 @@ its spoken reply.
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -18,37 +19,61 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_PROMPT = (
-    "Describe what you see in one short sentence. Be direct."
+    "Describe what you see in two or three sentences with useful detail "
+    "(people, objects, setting, notable colors or activity). Be direct, "
+    "no preamble."
 )
 _VISION_SYSTEM_PROMPT = (
-    "You are a vision assistant. Look at the attached image and answer the "
-    "user's question in one short sentence. No markdown or formatting."
+    "You are a vision assistant. Look at the attached image and answer "
+    "the user's question in two to three sentences with useful detail — "
+    "describe relevant people, objects, setting, colors, and any notable "
+    "activity. Be direct, no preamble. No markdown or formatting."
 )
 
 
 def _grab_frame(camera, retries: int = 4, delay_s: float = 0.15) -> Optional[str]:
-    """Pull a JPEG-b64 frame from camera with a short retry budget.
+    """Pull a fresh JPEG-b64 frame from camera with a short retry budget.
 
-    Tries the ring buffer (capture_single) first because it's cheapest, then
-    a fresh hardware read (read_live) so we don't fail when the ring is
-    momentarily empty. A few short retries cover startup races where neither
-    surface has populated yet.
+    Tries read_live() first — a direct hardware read so "what do you
+    see" always reflects the scene RIGHT NOW, not a stale frame from
+    the ring buffer. Falls back to capture_single() (ring buffer) only
+    if the live read fails (camera busy, transient error).
     """
     for attempt in range(retries):
-        try:
-            b64 = camera.capture_single()
-        except Exception:
-            b64 = None
-        if b64:
-            return b64
         try:
             b64 = camera.read_live()
         except Exception:
             b64 = None
         if b64:
             return b64
+        try:
+            b64 = camera.capture_single()
+        except Exception:
+            b64 = None
+        if b64:
+            return b64
         time.sleep(delay_s)
     return None
+
+
+def analyze_image_intent(text: str) -> bool:
+    """True if the user is asking a vision/'what do you see' question.
+
+    Used to bypass the LLM and call analyze_image directly so the tool
+    is always invoked (and uses a fresh frame).
+    """
+    t = re.sub(r"[^\w\s]", " ", (text or "").lower()).strip()
+    if not t:
+        return False
+    return bool(
+        re.search(r"\b(what|whats|whatre|describe)\b.*\b(see|seeing|view|look(ing)?)\b", t)
+        or re.search(r"\bdo you see\b", t)
+        or re.search(r"\bcan you see\b", t)
+        or re.search(r"\b(describe|tell me about)\s+(the\s+)?(scene|room|surroundings|view|image|picture|background)\b", t)
+        or re.search(r"\b(what(s|\s+is))\s+(in front of|around|behind|next to)\s+(you|me)\b", t)
+        or re.search(r"\blook around\b", t)
+        or re.search(r"\b(look (at|around) (the )?(scene|room|me|this)|look (and|then) tell me)\b", t)
+    )
 
 
 class AnalyzeImage(Tool):
