@@ -82,6 +82,14 @@ class MoveHead(Tool):
         pose = _head_pose(roll=roll, pitch=pitch, yaw=yaw)
         duration = float(deps.motion_duration_s or 1.0)
 
+        # Engage the manual-head override BEFORE moving so any in-flight
+        # emotion sequence is cancelled+joined — otherwise its trailing
+        # goto_target(neutral) overrides our new pose right after we
+        # send it (the "fleeting first move" bug).
+        mc = getattr(deps, "movement_controller", None)
+        if mc is not None and hasattr(mc, "set_manual_head"):
+            mc.set_manual_head(direction != "front")
+
         def _move():
             try:
                 deps.reachy.goto_target(pose, duration=duration)
@@ -95,13 +103,6 @@ class MoveHead(Tool):
         except Exception as e:
             logger.exception("move_head failed")
             return {"error": str(e)}
-
-        # Engage / release the manual-head override so emotion reactions
-        # don't snap the head back to neutral on the next utterance.
-        # "front" returns to autonomous reactive behavior.
-        mc = getattr(deps, "movement_controller", None)
-        if mc is not None and hasattr(mc, "set_manual_head"):
-            mc.set_manual_head(direction != "front")
 
         logger.info("Tool call: move_head direction=%s", direction)
         return {"status": f"looking {direction}"}

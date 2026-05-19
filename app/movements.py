@@ -76,6 +76,15 @@ class MovementController:
 
     def set_manual_head(self, on: bool) -> None:
         self._manual_head = bool(on)
+        if on:
+            # Preempt any in-flight emotion sequence so its trailing
+            # goto_target(neutral) can't snap the head back right after
+            # we point it. The sequences poll `_cancel` between steps
+            # and return early.
+            self._cancel.set()
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=0.5)
+            self._cancel.clear()
 
     def react(self, emotion: Emotion, confidence: float = 1.0) -> bool:
         """Trigger a movement sequence for the given emotion (non-blocking).
