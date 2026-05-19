@@ -30,6 +30,11 @@ class LLMConfig:
     max_tokens: int = 512
     temperature: float = 0.7
     timeout: float = 120.0
+    # Prior user+assistant exchanges replayed into each request so
+    # follow-ups ("how big are they?") have context. 0 disables history.
+    # Kept small (2): a small model gets confused/contaminated by older
+    # turns (e.g. parroting a stale "I don't have access" refusal).
+    history_turns: int = 2
     system_prompt: str = "You are a helpful AI assistant."
     system_prompt_no_rag: str = "You are a helpful AI assistant. Answer from your own knowledge."
     tools_enabled: bool = False
@@ -118,6 +123,16 @@ class ReachyConfig:
     #   wireless=False                  → wired USB (Reachy Mini Lite)
     wireless: bool = True
     on_device: bool = False
+    # When True, skip the robot entirely and use the host machine's own
+    # camera / microphone / speakers (sounddevice + OpenCV). Intended for
+    # developing on a laptop without a Reachy Mini or the GStreamer/WebRTC
+    # media proxy. Set by the --local-media CLI flag.
+    local_media: bool = False
+    # Robot host the SDK connects to (wireless/network mode). Default is
+    # the mDNS name; set to the robot's IP (e.g. "192.168.1.50") to
+    # bypass flaky .local resolution on unstable wifi.
+    host: str = "reachy-mini.local"
+    port: int = 8000
     spawn_daemon: bool = False
     timeout: float = 30.0
     media_backend: str = "no_media"     # only used when wireless=False

@@ -188,6 +188,7 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
       <div class="panel cam-panel">
         <div class="panel-hdr">
           <span>Robot View</span>
+          <select id="camSelect" title="Select camera" style="display:none;margin-left:auto;background:#1a1a1a;color:var(--fg,#eee);border:1px solid #333;border-radius:4px;font-size:.75rem;padding:2px 4px"></select>
           <span class="live-badge off" id="liveBadge">LIVE</span>
         </div>
         <div class="cam-wrap">
@@ -361,12 +362,50 @@ footer{display:flex;align-items:center;gap:16px;padding:6px 20px;background:var(
         case 'ptt_state': onPttState(msg); break;
         case 'tool_call': onToolCall(msg); break;
         case 'map_card': onMapCard(msg); break;
+        case 'camera_list': onCameraList(msg); break;
+        case 'camera_power': onCameraPower(msg); break;
       }
     };
   }
 
   /* ── Handlers ─────────────────────── */
+  function onCameraList(msg){
+    const sel = $('camSelect');
+    const cams = msg.cameras || [];
+    if(!cams.length){ sel.style.display = 'none'; return; }
+    sel.innerHTML = '';
+    for(const c of cams){
+      const o = document.createElement('option');
+      o.value = c.index;
+      o.textContent = c.label;
+      if(c.index === msg.current) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.style.display = '';
+  }
+
+  document.getElementById('camSelect').addEventListener('change', (e) => {
+    if(ws && ws.readyState === WebSocket.OPEN){
+      ws.send(JSON.stringify({type:'set_camera', index: parseInt(e.target.value, 10)}));
+    }
+  });
+
+  let camOff = false;
+  function onCameraPower(msg){
+    camOff = !msg.on;
+    if(camOff){
+      $('camImg').style.display = 'none';
+      const ph = $('camPlaceholder');
+      ph.textContent = 'Camera off';
+      ph.style.display = '';
+      $('liveBadge').className = 'live-badge off';
+    } else {
+      $('camPlaceholder').textContent = 'Waiting for camera...';
+    }
+  }
+
   function onFrame(msg){
+    if(camOff) return;
     const img = $('camImg');
     img.src = 'data:image/jpeg;base64,' + msg.data;
     img.style.display = 'block';

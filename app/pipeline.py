@@ -139,6 +139,13 @@ def play_audio(audio: np.ndarray, sample_rate: int, sink=None):
     callers stay generic (they just hand off whatever the MicRecorder
     exposes as pa_sink).
     """
+    # Host-local path — play out the laptop speakers (--local-media).
+    # Duck-typed (hasattr) rather than isinstance to avoid importing
+    # app.local_media here.
+    if sink is not None and not isinstance(sink, str) and hasattr(sink, "play_local"):
+        sink.play_local(audio, sample_rate)
+        return
+
     # Wireless path — push to the robot speaker over WebRTC/GStreamer.
     #
     # The reachy_mini_conversation_app reference pushes audio in many
@@ -199,14 +206,45 @@ def play_audio(audio: np.ndarray, sample_rate: int, sink=None):
 
 
 def tts_player(tts_obj, tts_q: queue.Queue, sink: Optional[str] = None):
-    """Background thread target: synthesize + play each sentence as it arrives."""
+    """Background thread target: synthesize and play chunks as they arrive.
+
+    Synthesis and playback run on separate threads so the next chunk is
+    being synthesized *while* the current one plays. The old serial
+    loop (synthesize -> play -> synthesize -> play) left a silent gap at
+    every chunk boundary equal to the next chunk's synthesis time —
+    that's the "awkward pause" between phrases. Prefetching one or more
+    chunks ahead keeps playback gapless as long as synthesis roughly
+    keeps up with speech rate (it does for short chunks).
+
+    tts_q  : text chunks in; None sentinel ends the stream.
+    audio_q: synthesized (audio, sample_rate) buffered ahead of playback.
+    """
+    _DONE = object()
+    audio_q: "queue.Queue" = queue.Queue(maxsize=8)
+
+    def _synth_loop():
+        while True:
+            text = tts_q.get()
+            if text is None:
+                audio_q.put(_DONE)
+                return
+            try:
+                r = tts_obj.synthesize(text)
+            except Exception:
+                r = None
+            if r is not None and r.get("audio") is not None:
+                audio_q.put((r["audio"], r["sample_rate"]))
+
+    synth = threading.Thread(target=_synth_loop, daemon=True)
+    synth.start()
+
     while True:
-        text = tts_q.get()
-        if text is None:
+        item = audio_q.get()
+        if item is _DONE:
+            synth.join(timeout=1)
             return
-        r = tts_obj.synthesize(text)
-        if r.get("audio") is not None:
-            play_audio(r["audio"], r["sample_rate"], sink=sink)
+        audio, sample_rate = item
+        play_audio(audio, sample_rate, sink=sink)
 
 
 # ── Silero VAD ────────────────────────────────────────────────────

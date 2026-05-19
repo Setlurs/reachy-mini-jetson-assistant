@@ -22,6 +22,8 @@ from app.tools import (  # noqa: F401
     play_emotion,
     stop_emotion,
     analyze_image,
+    camera_power,
+    get_time,
     web_search,
     air_quality,
     water_data,

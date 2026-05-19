@@ -42,6 +42,8 @@ llm:
     - play_emotion
     - stop_emotion
     - analyze_image
+    - set_camera_power
+    - get_time
     - web_search
     - air_quality
     - water_data
@@ -152,6 +154,7 @@ reachy:
   #   wired Reachy Mini Lite users: set wireless: false, spawn_daemon: true,
   #   media_backend: "no_media".
   #   running the app on the CM4 itself: set on_device: true (uses GStreamer).
+  host: "192.168.167.208"
   wireless: true
   on_device: false
   spawn_daemon: false
@@ -181,7 +184,8 @@ ha:
   # Reachy daemon HTTP API (volume control + status). Default points at
   # the robot's mDNS name for remote wireless setups. On-device users
   # should set this to http://127.0.0.1:8000.
-  daemon_url: "http://reachy-mini.local:8000"
+  #daemon_url: "http://reachy-mini.local:8000"
+  daemon_url: "http://192.168.167.208:8000"
 
 rag:
   enabled: true
