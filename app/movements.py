@@ -126,7 +126,9 @@ class MovementController:
         return True
 
     def reset(self) -> None:
-        """Return head and antennas to neutral position."""
+        """Return head and antennas to neutral position, and resume
+        autonomous emotion reactions (clears the manual-head override)."""
+        self._manual_head = False
         if self._reachy is None:
             return
         self._cancel.set()
@@ -138,6 +140,30 @@ class MovementController:
             self._reachy.set_target_antenna_joint_positions(self._antenna_rest)
         except Exception:
             pass
+
+    def play(self, emotion: Emotion) -> bool:
+        """Run an emotion sequence on user demand.
+
+        Unlike react(), this bypasses the manual-head override and the
+        cooldown — explicit requests always play. Cancels any in-flight
+        sequence first so the new one isn't interrupted by old steps.
+        """
+        if self._reachy is None:
+            return False
+        if emotion == Emotion.NEUTRAL:
+            self.reset()
+            return True
+        self._cancel.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+        self._cancel.clear()
+        self._last_emotion = emotion
+        self._last_react_time = time.time()
+        self._thread = threading.Thread(
+            target=self._run_sequence, args=(emotion,), daemon=True,
+        )
+        self._thread.start()
+        return True
 
     def _run_sequence(self, emotion: Emotion) -> None:
         try:
@@ -247,11 +273,25 @@ def _seq_neutral(reachy, cancel: threading.Event, rest: list[float]) -> None:
     pass
 
 
+def _seq_surprised(reachy, cancel: threading.Event, rest: list[float]) -> None:
+    # Sharp jerk back + antennas wide, hold, then settle.
+    reachy.goto_target(_head_pose(pitch=-15, yaw=0), duration=0.18)
+    reachy.set_target_antenna_joint_positions([0.9, -0.9])
+    if _wait(cancel, 0.35):
+        return
+    reachy.goto_target(_head_pose(pitch=-8), duration=0.25)
+    if _wait(cancel, 0.3):
+        return
+    reachy.goto_target(_head_pose(), duration=0.3)
+    reachy.set_target_antenna_joint_positions(rest)
+
+
 _SEQUENCES = {
     Emotion.HAPPY: _seq_happy,
     Emotion.SAD: _seq_sad,
     Emotion.CURIOUS: _seq_curious,
     Emotion.EXCITED: _seq_excited,
+    Emotion.SURPRISED: _seq_surprised,
     Emotion.GREETING: _seq_greeting,
     Emotion.FAREWELL: _seq_farewell,
     Emotion.GRATEFUL: _seq_grateful,

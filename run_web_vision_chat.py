@@ -60,6 +60,7 @@ from app.tools import (
 from app.tools.camera_power import camera_power_intent
 from app.tools.move_head import move_head_intent
 from app.tools.analyze_image import analyze_image_intent
+from app.tools.play_emotion import play_emotion_intent
 from app.tools.mic_status import mic_command_intent, mic_status_query
 from app.tools.play_video import (
     register_videos, video_command_intent, resolve_clip,
@@ -951,6 +952,28 @@ def main():
                 msg = result.get("status") or f"looking {_dir}"
                 msg = msg if msg.endswith(".") else msg + "."
                 _say(msg.capitalize())
+                llm.add_turn(text, msg)
+                broadcaster.send({"type": "status", "stage": _idle_status()})
+                mic.resume()
+                continue
+
+            # ── Deterministic emotion-play intercept ─────────────
+            # "show me you're excited" / "act surprised" / "be happy"
+            # — call play_emotion directly so it fires every time.
+            _emo = play_emotion_intent(text)
+            if _emo is not None and config.llm.tools_enabled:
+                import asyncio
+                _loop = asyncio.new_event_loop()
+                try:
+                    result = _loop.run_until_complete(
+                        _tool_dispatcher("play_emotion", {"emotion": _emo})
+                    )
+                finally:
+                    _loop.close()
+                _emit_tool_call("play_emotion", {"emotion": _emo}, result)
+                msg = (f"Playing {_emo}." if result.get("status") == "playing"
+                       else result.get("error") or f"Couldn't play {_emo}.")
+                _say(msg)
                 llm.add_turn(text, msg)
                 broadcaster.send({"type": "status", "stage": _idle_status()})
                 mic.resume()

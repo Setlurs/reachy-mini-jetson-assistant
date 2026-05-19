@@ -46,6 +46,7 @@ class Emotion(Enum):
     SAD = "sad"
     CURIOUS = "curious"
     EXCITED = "excited"
+    SURPRISED = "surprised"
     GREETING = "greeting"
     FAREWELL = "farewell"
     GRATEFUL = "grateful"
