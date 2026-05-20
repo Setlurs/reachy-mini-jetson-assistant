@@ -32,9 +32,10 @@ class LLMConfig:
     timeout: float = 120.0
     # Prior user+assistant exchanges replayed into each request so
     # follow-ups ("how big are they?") have context. 0 disables history.
-    # Kept small (2): a small model gets confused/contaminated by older
-    # turns (e.g. parroting a stale "I don't have access" refusal).
-    history_turns: int = 2
+    # Kept at 1 (a single round of back-and-forth): a small model gets
+    # confused/contaminated by older turns — e.g. parroting a prior
+    # assistant reply ("looking left") instead of emitting a tool call.
+    history_turns: int = 1
     system_prompt: str = "You are a helpful AI assistant."
     system_prompt_no_rag: str = "You are a helpful AI assistant. Answer from your own knowledge."
     tools_enabled: bool = False
