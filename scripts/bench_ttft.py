@@ -118,11 +118,16 @@ def measure_ttft(system_prompt, img_b64):
 def _open_camera():
     """Try Reachy SDK first, then iterate device indices."""
     try:
-        from reachy_mini.media.camera_utils import find_camera
-        cap, _ = find_camera()
-        if cap and cap.isOpened():
-            print("Camera opened via Reachy SDK")
-            return cap
+        # SDK ≥1.8: device detection moved to device_detection.get_video_device,
+        # which returns a (device_path, specs) tuple rather than an opened cap.
+        from reachy_mini.media.device_detection import get_video_device
+        device_path, _ = get_video_device()
+        if device_path:
+            cap = (cv2.VideoCapture(int(device_path)) if device_path.lstrip("-").isdigit()
+                   else cv2.VideoCapture(device_path, cv2.CAP_V4L2))
+            if cap and cap.isOpened():
+                print("Camera opened via Reachy SDK")
+                return cap
     except Exception:
         pass
     for idx in range(4):

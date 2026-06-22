@@ -254,7 +254,7 @@ class LocalMicRecorder:
 class LocalCamera(Camera):
     """Host webcam via OpenCV's default backend.
 
-    The base Camera.open() first probes the Reachy SDK's find_camera()
+    The base Camera.open() first probes the Reachy SDK's get_video_device()
     (which targets the robot's specific USB camera) and then tries a
     V4L2 device index — neither is right on a laptop. This override goes
     straight to cv2.VideoCapture(device), which uses AVFoundation on

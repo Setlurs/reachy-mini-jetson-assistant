@@ -30,7 +30,11 @@ import cv2
 import numpy as np
 
 try:
-    from reachy_mini.media.camera_utils import find_camera
+    # SDK ≥1.8 moved camera detection out of media.camera_utils.find_camera
+    # (which returned an opened VideoCapture) into device_detection.
+    # get_video_device() returns a (device_path, specs) tuple instead —
+    # we open the capture ourselves below.
+    from reachy_mini.media.device_detection import get_video_device
     HAS_REACHY_CAM = True
 except ImportError:
     HAS_REACHY_CAM = False
@@ -100,16 +104,25 @@ class Camera:
         if self._cap is not None and self._cap.isOpened():
             return True
 
-        # Try Reachy Mini SDK camera detection first (finds correct device by USB VID/PID)
+        # Try Reachy Mini SDK camera detection first (finds the correct device
+        # by name/USB VID-PID). get_video_device() returns a platform-specific
+        # path: "/dev/videoN" on Linux, the index as a string on macOS.
         if HAS_REACHY_CAM:
             try:
-                cap, specs = find_camera()
-                if cap is not None and cap.isOpened():
-                    self._cap = cap
-                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                    self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    return True
+                device_path, _specs = get_video_device()
+                if device_path:
+                    if device_path.lstrip("-").isdigit():
+                        cap = cv2.VideoCapture(int(device_path))
+                    else:
+                        cap = cv2.VideoCapture(device_path, cv2.CAP_V4L2)
+                        if not cap.isOpened():
+                            cap = cv2.VideoCapture(device_path)
+                    if cap is not None and cap.isOpened():
+                        self._cap = cap
+                        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        return True
             except Exception:
                 pass
 

@@ -42,8 +42,10 @@ ddgs>=6.0.0
 # so Kokoro doesn't stumble over digit-by-digit pronunciation.
 num2words>=0.5.13
 
-# Reachy Mini SDK (robot control)
-# Installed separately: pip install reachy-mini
+# Reachy Mini SDK (robot control) — pinned to the tested SDK release.
+# Installed separately: pip install "reachy-mini==1.8.3"
+# Note: SDK >=1.8 replaced media.camera_utils.find_camera() with
+# media.device_detection.get_video_device(); app/camera.py targets the new API.
 
 # Jetson-specific (install separately, see README):
 #   pip install onnxruntime-gpu --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126
